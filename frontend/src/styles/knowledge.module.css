@@ -1,0 +1,219 @@
+/* ════════════════════════════════════════════
+ *  KnowledgePage — 筛选器 + 知识卡片
+ * ════════════════════════════════════════════ */
+
+/* ── SegmentedControl 筛选栏 ── */
+.filterBar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.filterGroup {
+  display: flex;
+  gap: 2px;
+  background: #f0f4ff;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.filterItem {
+  padding: 4px 10px;
+  font-size: 11px;
+  color: #64748b;
+  cursor: pointer;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  font-weight: 400;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.filterItem:hover {
+  color: #2563eb;
+}
+
+.filterItemActive {
+  composes: filterItem;
+  background: white;
+  color: #2563eb;
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+/* ── 知识卡片列表 ── */
+.cardList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.knowledgeCard {
+  background: white;
+  border: 1px solid #e0e7ff;
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  transition: box-shadow 0.15s;
+}
+
+.knowledgeCard:hover {
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.06);
+}
+
+.cardContent {
+  flex: 1;
+  min-width: 0;
+}
+
+.tagRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.tag {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* 类型标签 */
+.tagTerminology { composes: tag; background: #eff6ff; color: #2563eb; }
+.tagRule       { composes: tag; background: #fce7f3; color: #db2777; }
+.tagExample    { composes: tag; background: #ecfdf5; color: #059669; }
+
+/* 范围标签 */
+.tagGlobal     { composes: tag; background: #fef3c7; color: #d97706; }
+.tagNamespace  { composes: tag; background: #eff6ff; color: #2563eb; }
+
+/* 来源标签 */
+.tagManual       { composes: tag; background: #f0fdf4; color: #10b981; }
+.tagConversation { composes: tag; background: #f5f3ff; color: #7c3aed; }
+.tagGit          { composes: tag; background: #e0e7ff; color: #4f46e5; }
+
+.cardText {
+  font-size: 13px;
+  color: #1e3a5f;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.cardActions {
+  display: flex;
+  gap: 6px;
+  margin-left: 12px;
+  flex-shrink: 0;
+}
+
+.actionBtn {
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  cursor: pointer;
+  border-width: 1px;
+  border-style: solid;
+  background: transparent;
+}
+
+.editBtn {
+  composes: actionBtn;
+  border-color: #dbeafe;
+  color: #64748b;
+}
+
+.editBtn:hover { color: #2563eb; border-color: #2563eb; }
+
+.deleteBtn {
+  composes: actionBtn;
+  border-color: #fecaca;
+  color: #ef4444;
+}
+
+.deleteBtn:hover { background: #fef2f2; }
+
+/* ── Tab 栏 ── */
+.tabBar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1.5px solid #e0e7ff;
+  margin-bottom: 16px;
+}
+
+.tabItem {
+  padding: 8px 16px;
+  font-size: 13px;
+  color: #64748b;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1.5px;
+  transition: color 0.15s;
+}
+
+.tabItem:hover { color: #2563eb; }
+
+.tabItemActive {
+  composes: tabItem;
+  color: #2563eb;
+  font-weight: 500;
+  border-bottom-color: #2563eb;
+}
+
+/* ── 命名空间小选择器 ── */
+.nsSelect {
+  margin-left: 16px;
+}
+
+/* ── Git 仓库卡片 (复用 namespace 风格) ── */
+.repoCard {
+  background: white;
+  border: 1px solid #e0e7ff;
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.repoInfo { flex: 1; min-width: 0; }
+
+.repoUrl {
+  font-size: 13px;
+  color: #1e3a5f;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repoMeta {
+  font-size: 12px;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.repoActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 12px;
+}
+
+/* ── 空状态 ── */
+.empty {
+  text-align: center;
+  padding: 48px 0;
+  color: #93c5fd;
+  font-size: 13px;
+}

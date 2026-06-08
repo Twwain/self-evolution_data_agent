@@ -1,0 +1,137 @@
+/* ════════════════════════════════════════════
+ *  智能查询页 — 主页 (Stage 6: SSE Agent Loop)
+ *  useAgentStream + QueryStreamView 单一路径
+ *
+ *  布局:
+ *    - idle: logo + 输入框居中 (Kimi 风格首屏)
+ *    - 对话中: 顶部栏 / 中间可滚动区 / 底部固定输入框 (Kimi 对话页风格)
+ *              自动滚动到底部 — 用户手动上滚时暂停跟随, 滚回底部恢复跟随
+ * ════════════════════════════════════════════ */
+
+import React, { useEffect, useRef, useState } from "react";
+import { v4 as uuidv4 } from "uuid";
+import NamespaceSelector from "@/components/NamespaceSelector";
+import ChatInput from "@/components/ChatInput";
+import { QueryStreamView } from "@/components/stream/QueryStreamView";
+import { useAgentStream, type AgentStreamState } from "@/hooks/useAgentStream";
+import { submitCorrection, submitClarifyResponse, cancelStream } from "@/api/correction";
+import type { CorrectionAction } from "@/api/correction";
+import styles from "@/styles/query.module.css";
+
+/** 距底阈值 — 小于这个距离就认为用户"还在底部", 可自动跟随. */
+const FOLLOW_THRESHOLD_PX = 64;
+
+const QueryPage: React.FC = () => {
+  const [nsId, setNsId] = useState<number>();
+  const [sessionId] = useState<string>(uuidv4());
+  const { state, start, stop } = useAgentStream();
+  // 已归档的历史轮次 (已完成/已取消) — 新一轮开始前把当前轮快照推入, 防被 reset 清空
+  const [turns, setTurns] = useState<AgentStreamState[]>([]);
+
+  // ── 有礼貌的自动跟随 ──────────────────────────────────
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const followRef = useRef(true);   // 用户是否仍在底部, 决定是否自动拉到底
+
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    followRef.current = distanceFromBottom < FOLLOW_THRESHOLD_PX;
+  };
+
+  // state 变化触发 (thinking / tools / final_answer / status) — 若在跟随则拉到底
+  useEffect(() => {
+    if (!followRef.current) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [state]);
+
+  const handleSend = async (question: string) => {
+    if (!nsId) return;
+    followRef.current = true; // 新一轮发问, 强制回到底部跟随
+    // 归档当前轮 (非 idle) 为只读历史, 防 start() 内部 reset 清空上一轮会话
+    if (state.status !== "idle") {
+      setTurns((prev) => [...prev, state]);
+    }
+    await start({ namespace_id: nsId, question, session_id: sessionId });
+  };
+
+  const handleStop = async () => {
+    if (state.traceId) {
+      try { await cancelStream(state.traceId); } catch { /* ignore */ }
+    }
+    stop();
+  };
+
+  const handleClarifyAnswer = async (pendingId: number, answer: string) => {
+    if (!state.traceId) return;
+    await submitClarifyResponse(state.traceId, { pending_id: pendingId, answer });
+  };
+
+  const handleCorrect = async (action: CorrectionAction, instruction: string) => {
+    if (!state.traceId) return;
+    if (action !== "abort" && !instruction) return;
+    await submitCorrection(state.traceId, { action, instruction });
+  };
+
+  const running = state.status === "running";
+  const isIdle = state.status === "idle" && turns.length === 0;
+
+  if (isIdle) {
+    return (
+      <div className={`${styles.pageContainer} ${styles.pageIdle}`}>
+        <NamespaceSelector
+          value={nsId}
+          onChange={(id) => setNsId(id)}
+        />
+        <div className={styles.idleWrapper}>
+          <div className={styles.logo}>NL2QL</div>
+          <ChatInput onSend={handleSend} loading={running || !nsId} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={styles.pageContainer}>
+      <div className={styles.chatHeader}>
+        <NamespaceSelector
+          value={nsId}
+          onChange={(id) => setNsId(id)}
+        />
+      </div>
+      <div
+        className={styles.chatScroll}
+        ref={scrollRef}
+        onScroll={handleScroll}
+      >
+        {/* 历史轮次 — 只读, 不渲染操作按钮 */}
+        {turns.map((turn, i) => (
+          <QueryStreamView
+            key={turn.traceId ?? `turn-${i}`}
+            state={turn}
+            readOnly
+            onStop={() => {}}
+            onClarifyAnswer={() => {}}
+            onCorrect={() => {}}
+          />
+        ))}
+        {/* 当前活跃轮 — 完整交互 (idle 时不渲染, 避免历史后多一个空块) */}
+        {state.status !== "idle" && (
+          <QueryStreamView
+            state={state}
+            onStop={handleStop}
+            onClarifyAnswer={handleClarifyAnswer}
+            onCorrect={handleCorrect}
+          />
+        )}
+      </div>
+      <div className={styles.chatFooter}>
+        <ChatInput onSend={handleSend} loading={running || !nsId} />
+      </div>
+    </div>
+  );
+};
+
+export default QueryPage;

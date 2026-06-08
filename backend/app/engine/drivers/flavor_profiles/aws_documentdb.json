@@ -1,0 +1,62 @@
+{
+  "flavor": "documentdb",
+  "display_name": "AWS DocumentDB",
+  "priority": 100,
+  "_note": "能力清单为 2026-06-03 对 DocumentDB 5.0.0 实例实测探测结果 (scripts/probe_documentdb_caps.py), 非文档泛化. 重探或换版本时重跑该脚本回写.",
+  "detection": {
+    "all": [
+      {"field_absent": "gitVersion"},
+      {"field_absent": "modules"}
+    ]
+  },
+  "capability_restrictions": {
+    "unsupported_ops": [
+      "$bitAnd",
+      "$bitOr",
+      "$dateFromParts",
+      "$dateToParts",
+      "$dateTrunc",
+      "$firstN",
+      "$function",
+      "$isNumber",
+      "$lastN",
+      "$maxN",
+      "$median",
+      "$minN",
+      "$percentile",
+      "$rand",
+      "$round",
+      "$sortArray",
+      "$toHashedIndexKey",
+      "$trunc"
+    ],
+    "unsupported_stage_variants": [
+      "$lookup.let_pipeline",
+      "$bucketAuto",
+      "$densify",
+      "$documents",
+      "$facet",
+      "$graphLookup",
+      "$replaceWith",
+      "$setWindowFields",
+      "$sortByCount",
+      "$unionWith"
+    ],
+    "syntax_constraints": [
+      "project_no_dollar_fieldpath"
+    ]
+  },
+  "equivalent_hints": [
+    {"restriction": "$lookup.let_pipeline", "suggestion": "DocumentDB 不支持 $lookup 的 let/pipeline 子查询形态 (错误码 304); 改用基础 localField/foreignField 形态, 关联过滤后置到下游 $match. 若需关联 DBRef 字段: 单 pipeline 内抽取不可用 (无 $lookup let/pipeline、无 $ 前缀 fieldpath), 改为多步 — 先查出含 DBRef 的文档读其 $id_str, 再用 {<目标集合的关联字段>: {$in: [读到的 $id_str 列表]}} 查目标集合; $id_str 仅是结果展示值, 不要反向拿它 filter 源集合的 DBRef 字段."},
+    {"restriction": "project_no_dollar_fieldpath", "suggestion": "DocumentDB 不允许 $project/$addFields 内出现 $ 前缀 fieldpath (错误码 16410/5654600, 如 $getField:{field:'$id'}); 字段引用用裸名 'a.b', 需要表达式时改用 $expr 或上移到 $set."},
+    {"restriction": "$facet", "suggestion": "DocumentDB 不支持 $facet/$bucketAuto/$sortByCount (错误码 304); 多维聚合拆成多次独立 aggregate 查询, 或在应用层合并."},
+    {"restriction": "$graphLookup", "suggestion": "DocumentDB 不支持 $graphLookup (错误码 304); 递归/层级关联改用应用层多轮 $lookup 迭代, 或预先在写入时展开层级."},
+    {"restriction": "$unionWith", "suggestion": "DocumentDB 不支持 $unionWith/$replaceWith/$documents (错误码 304/40324); 多集合合并改用应用层拼接, $replaceWith 改用 $replaceRoot."},
+    {"restriction": "$setWindowFields", "suggestion": "DocumentDB 不支持 $setWindowFields/$densify (错误码 40324); 窗口/排名/填充计算改用 $group + 应用层后处理."},
+    {"restriction": "$firstN", "suggestion": "DocumentDB 不支持 $firstN/$lastN/$maxN/$minN/$sortArray (错误码 305); 取前 N/排序数组改用 $slice + 预排序, 或应用层处理."},
+    {"restriction": "$percentile", "suggestion": "DocumentDB 不支持 $percentile/$median (错误码 305); 分位数改用应用层计算, 或 $bucket 近似."},
+    {"restriction": "$dateTrunc", "suggestion": "DocumentDB 不支持 $dateTrunc/$dateToParts/$dateFromParts (错误码 305); 日期截断/分解改用 $year/$month/$dayOfMonth 等基础日期算子组合."},
+    {"restriction": "$round", "suggestion": "DocumentDB 不支持 $round/$trunc/$bitAnd/$bitOr (错误码 305); 取整改用 $floor/$ceil + 算术, 位运算改用应用层."},
+    {"restriction": "$function", "suggestion": "DocumentDB 不支持 $function/$rand/$isNumber/$toHashedIndexKey (错误码 305/168); 自定义 JS 逻辑改用原生算子组合或应用层处理."}
+  ]
+}

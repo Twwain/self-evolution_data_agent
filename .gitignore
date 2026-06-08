@@ -1,0 +1,26 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.coverage
+.pytest_cache/
+.DS_Store
+data/
+.env
+*.db
+node_modules/
+dist/
+.vite/
+coverage/
+playwright-report/
+test-results/
+.superpowers/
+.worktrees/
+.claude/
+.kiro/
+.playwright-mcp/
+tmp/
+backend/verification_report.md
+
+# ── 双源发布: 临时部署脚本 + 脱敏黑名单 (永不进任何 remote) ──
+.deploy/
+scripts/.publish-denylist

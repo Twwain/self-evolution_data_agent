@@ -1,0 +1,43 @@
+# Stage 2 Task 8 — pre-commit hardcode 扫描守门员
+# 启用方法 (开发本地一次性):
+#   pip install pre-commit
+#   pre-commit install
+# 之后每次 git commit 自动跑.
+
+repos:
+  - repo: local
+    hooks:
+      - id: no-hardcode-numbers
+        name: backend/app hardcode number scan
+        entry: bash -c 'cd backend && python -m scripts.check_no_hardcode --path app'
+        language: system
+        files: ^backend/app/.*\.py$
+        pass_filenames: false
+
+      # 类型检查门 — 类型注解形同虚设的根因是不接 CI/pre-commit
+      # baseline 锁当前 errors, 新增 0 容忍; 修复后跑 --regenerate 收缩 baseline
+      - id: pyright-baseline
+        name: pyright baseline (no new errors allowed)
+        entry: python scripts/pyright_baseline.py
+        language: system
+        files: ^backend/app/.*\.py$
+        pass_filenames: false
+
+      # mongo-canonical-retirement T9 step 4: prompt-drift 守门
+      # 设计稿与运行时模板正文必须一致
+      - id: equivalence-prompt-drift
+        name: equivalence semantic prompt drift gate
+        entry: bash backend/scripts/check_equivalence_prompt_drift.sh
+        language: system
+        files: '(docs/superpowers/specs/2026-05-19-mongo-canonical-retirement/prompts/.*\.md|backend/app/knowledge/equivalence/prompts/.*\.md)'
+        pass_filenames: false
+
+      # CLAUDE.md ≤ 100 行硬上限
+      # 根 CLAUDE.md 每次会话全量加载, 超 100 行说明在错放实现细节 / 历史进展
+      # 应走 path-scoped 子目录 CLAUDE.md / git log / docs/
+      - id: claude-md-line-limit
+        name: CLAUDE.md ≤ 100 行
+        entry: bash -c 'lines=$(wc -l < CLAUDE.md); [ "$lines" -le 100 ] || { echo "CLAUDE.md $lines 行超 100 行上限, 把实现细节迁到子目录 CLAUDE.md, 历史进展走 git log/CHANGELOG"; exit 1; }'
+        language: system
+        files: ^CLAUDE\.md$
+        pass_filenames: false

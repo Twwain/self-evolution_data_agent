@@ -1,0 +1,160 @@
+/* ════════════════════════════════════════════
+ *  NamespacePage — 顶部下拉选择 + 详情面板 (单列布局)
+ * ════════════════════════════════════════════ */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: calc(100vh - 100px);
+  overflow: hidden;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e0e7ff;
+  flex-shrink: 0;
+}
+
+/* ── 详情面板 ── */
+.detailPanel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ── Tabs 撑满剩余高度 + 内容可滚动 ── */
+.detailTabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.detailTabs :global(.ant-tabs-content-holder) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.detailTabs :global(.ant-tabs-content) {
+  height: 100%;
+}
+
+.detailTabs :global(.ant-tabs-tabpane) {
+  height: 100%;
+  overflow-y: auto;
+  padding-bottom: 16px;
+}
+
+.detailHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.detailTitle {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1e3a5f;
+}
+
+.detailMeta {
+  font-size: 11px;
+  color: #93c5fd;
+}
+
+.detailContent {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* ── 数据源卡片 ── */
+.dsCard {
+  background: white;
+  border: 1px solid #e0e7ff;
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.dsInfo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dsIcon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: #eff6ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: #2563eb;
+  flex-shrink: 0;
+}
+
+.dsName {
+  font-size: 13px;
+  font-weight: 500;
+  color: #1e3a5f;
+}
+
+.dsMeta {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.dsActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── 空状态 ── */
+.empty {
+  text-align: center;
+  padding: 40px;
+  color: #93c5fd;
+  font-size: 13px;
+}
+
+/* ── 规则行内表单 ── */
+.ruleForm {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  align-items: flex-start;
+}
+
+/* ── 仓库卡片 ── */
+.repoCard {
+  composes: dsCard;
+}
+
+/* ── 解析报告内嵌面板 ── */
+.reportPanel {
+  background: #f8fafc;
+  border: 1px solid #e0e7ff;
+  border-radius: 10px;
+  padding: 16px;
+  margin-top: 12px;
+}
+
+.reportScore {
+  text-align: center;
+  margin-bottom: 16px;
+}

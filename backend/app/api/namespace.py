@@ -1,0 +1,407 @@
+"""
+命名空间 CRUD + 数据源管理
+
+Stage 1 Task 14: NamespaceRule 已废弃, 规则统一走 KnowledgeEntry[entry_type=rule]
+Stage 2 Task 4: DELETE namespace 走 BulkOpGuard + confirm_token 防误操作
+"""
+
+import hashlib
+
+import pymysql
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pymongo import MongoClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth import get_current_user, require_admin
+from app.config import settings
+from app.db.metadata import get_db
+from app.engine.registry import delete_knowledge_collection
+from app.knowledge.bulk_guard import BulkOperationGuard
+from app.models import DataSource, Namespace
+from app.models.user import User, UserNamespaceAccess
+from app.schemas import (
+    DataSourceCreate,
+    DataSourceOut,
+    DataSourceTestResult,
+    NamespaceCreate,
+    NamespaceDeletePreview,
+    NamespaceOut,
+    NamespaceUpdate,
+    SchemaRefreshResult,
+)
+
+router = APIRouter(prefix="/api/namespaces", tags=["namespaces"])
+
+
+# ════════════════════════════════════════════
+#  命名空间 CRUD
+# ════════════════════════════════════════════
+
+@router.get("", response_model=list[NamespaceOut])
+async def list_namespaces(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    列出命名空间 — 权限隔离
+    - Admin: 看到所有命名空间
+    - User: 仅看到有权限访问的命名空间
+    """
+    if user.role == "admin":
+        result = await db.execute(select(Namespace).order_by(Namespace.created_at.desc()))
+    else:
+        result = await db.execute(
+            select(Namespace)
+            .join(UserNamespaceAccess)
+            .where(UserNamespaceAccess.user_id == user.id)
+            .order_by(Namespace.created_at.desc())
+        )
+    return result.scalars().all()
+
+
+@router.post("", response_model=NamespaceOut, status_code=201)
+async def create_namespace(
+    body: NamespaceCreate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    ns = Namespace(name=body.name, slug=body.slug, description=body.description)
+    db.add(ns)
+    await db.commit()
+    await db.refresh(ns)
+    return ns
+
+
+@router.put("/{ns_id}", response_model=NamespaceOut)
+async def update_namespace(
+    ns_id: int,
+    body: NamespaceUpdate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    ns = await _get_namespace(db, ns_id)
+    if body.name is not None:
+        ns.name = body.name
+    if body.description is not None:
+        ns.description = body.description
+    await db.commit()
+    await db.refresh(ns)
+    return ns
+
+
+@router.delete("/{ns_id}")
+async def delete_namespace(
+    ns_id: int,
+    dry_run: bool = Query(
+        True,
+        description="dry_run=true 仅返回 NamespaceDeletePreview, 不动数据",
+    ),
+    confirm_token: str | None = Query(
+        None,
+        description="dry_run=false 且 affected_count > 阈值时必填; 由 dry_run 报告下发",
+    ),
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """命名空间删除 (Stage 2 Task 4) — BulkOpGuard 接管 KE 删除 + 大批量确认机制.
+
+    三态语义:
+        dry_run=True
+            → 200 NamespaceDeletePreview (含 affected_count / by_source /
+              by_entry_type / preserved_audited_count / sample_ids /
+              confirm_required + confirm_token)
+            → 数据完全不动
+        dry_run=False & affected_count <= bulk_op_require_confirm_above (默认 100)
+            → 直接执行 BulkOpGuard.execute → ns CASCADE 删 → 204
+        dry_run=False & affected_count > 阈值
+            → confirm_token 缺/错  → 422 (含 expected_token + affected_count)
+            → confirm_token 正确    → 执行删除 → 204
+
+    breaking change: 旧 DELETE 不带 dry_run 默认走 preview, 不再直接 204; 项目
+    处测试期接受. 前端配合 dry_run + confirm dialog 升级.
+    """
+    ns = await _get_namespace(db, ns_id)
+
+    # ── BulkOpGuard preview 探影响范围 (永远 dry_run, 无副作用)
+    preview_guard = BulkOperationGuard(
+        op_name="namespace_delete",
+        scope_filter={"namespace_id": ns_id},
+        dry_run=True,
+        actor_id=admin.id,
+        reason=f"namespace delete ns_id={ns_id}",
+    )
+    preview = await preview_guard.preview(db)
+    expected_token = _compute_confirm_token(ns_id, preview.affected_count)
+    confirm_required = preview.affected_count > settings.bulk_op_require_confirm_above
+
+    # ── dry_run: 仅返报告
+    if dry_run:
+        return NamespaceDeletePreview(
+            op_name=preview.op_name,
+            affected_count=preview.affected_count,
+            by_source=preview.by_source,
+            by_entry_type=preview.by_entry_type,
+            preserved_audited_count=preview.preserved_audited_count,
+            sample_ids=preview.sample_ids,
+            confirm_required=confirm_required,
+            confirm_token=expected_token if confirm_required else None,
+        )
+
+    # ── 真删: 大批量必须 confirm_token (防误操作 + 防状态漂移)
+    if confirm_required:
+        if not confirm_token:
+            raise HTTPException(
+                422,
+                detail={
+                    "error": "confirm_token_required",
+                    "affected_count": preview.affected_count,
+                    "expected_token": expected_token,
+                    "message": (
+                        f"namespace 含 {preview.affected_count} 条 KE > "
+                        f"{settings.bulk_op_require_confirm_above} 阈值, 需 confirm_token"
+                    ),
+                },
+            )
+        if confirm_token != expected_token:
+            raise HTTPException(
+                422,
+                detail={
+                    "error": "confirm_token_mismatch",
+                    "affected_count": preview.affected_count,
+                    "expected_token": expected_token,
+                    "message": "confirm_token 不匹配 (规模可能已变化, 请重新 dry_run)",
+                },
+            )
+
+    # ── BulkOpGuard 真执行 (KE + audit + ChromaDB best-effort)
+    real_guard = BulkOperationGuard(
+        op_name="namespace_delete",
+        scope_filter={"namespace_id": ns_id},
+        dry_run=False,
+        actor_id=admin.id,
+        reason=f"namespace delete ns_id={ns_id} confirmed",
+    )
+    await real_guard.execute(db, slug=ns.slug)
+
+    # ── 向量集合清理 + 命名空间本体删除 (CASCADE 清剩余 datasource)
+    delete_knowledge_collection(ns.slug)
+
+    # ── AC 自动机缓存清理 ──
+    from app.knowledge.terminology_automaton import invalidate
+    await invalidate(ns.id)
+
+    await db.delete(ns)
+    await db.commit()
+    return Response(status_code=204)
+
+
+def _compute_confirm_token(ns_id: int, affected_count: int) -> str:
+    """confirm_token 派生 — 防误操作 + 防状态漂移.
+
+    非安全场景 (admin only, 即便预测也只是删自己有权限的 ns); 含 affected_count
+    入参防"用户拿旧 dry_run 报告几小时后再确认", 期间 KE 数变化 → token 不匹配
+    → 422 提示重新 dry_run.
+    """
+    return hashlib.sha256(f"{ns_id}:{affected_count}".encode()).hexdigest()[:16]
+
+
+# ════════════════════════════════════════════
+#  数据源
+# ════════════════════════════════════════════
+
+@router.get("/{ns_id}/datasources", response_model=list[DataSourceOut])
+async def list_datasources(
+    ns_id: int,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_namespace(db, ns_id)
+    result = await db.execute(
+        select(DataSource).where(DataSource.namespace_id == ns_id)
+    )
+    return result.scalars().all()
+
+
+# ════════════════════════════════════════════
+#  Phase 3 Task 3.1: 联动 API — terminology 编辑表单数据源
+# ════════════════════════════════════════════
+
+@router.get("/{ns_id}/databases")
+async def get_namespace_databases(
+    ns_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """列出 ns 下所有 DataSource — terminology 编辑表单一级下拉数据源."""
+    rows = (await db.execute(
+        select(DataSource).where(DataSource.namespace_id == ns_id)
+    )).scalars().all()
+    return {
+        "databases": [
+            {
+                "database": ds.database,
+                "db_type": ds.db_type,
+                "datasource_id": ds.id,
+                "host": ds.host,
+            }
+            for ds in rows
+        ]
+    }
+
+
+@router.get("/{ns_id}/collections")
+async def get_namespace_collections(
+    ns_id: int,
+    database: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """列出某 database 下的 collections/tables — terminology 编辑表单二级下拉数据源.
+
+    - mongodb: 走 SchemaCanonicalObject (db_type='mongodb') 真相源
+    - mysql: 读 DataSource.schema_snapshot_json.tables 键
+    - 未知 DataSource: db_type=null + collections=[] (前端容错)
+    """
+    import json
+
+    from app.models.schema_canonical_object import SchemaCanonicalObject
+
+    ds = (await db.execute(
+        select(DataSource).where(
+            DataSource.namespace_id == ns_id,
+            DataSource.database == database,
+        )
+    )).scalar_one_or_none()
+
+    if ds is None:
+        return {"database": database, "db_type": None, "collections": []}
+
+    if ds.db_type == "mongodb":
+        rows = (await db.execute(
+            select(SchemaCanonicalObject.target).where(
+                SchemaCanonicalObject.namespace_id == ns_id,
+                SchemaCanonicalObject.db_type == "mongodb",
+                SchemaCanonicalObject.database == database,
+            ).distinct()
+        )).all()
+        colls = [r[0] for r in rows]
+    else:
+        snap = ds.schema_snapshot_json or "{}"
+        try:
+            colls = list(json.loads(snap).get("tables", {}).keys())
+        except json.JSONDecodeError:
+            colls = []
+
+    return {"database": database, "db_type": ds.db_type, "collections": colls}
+
+
+@router.post("/{ns_id}/datasources", response_model=DataSourceOut, status_code=201)
+async def add_datasource(
+    ns_id: int,
+    body: DataSourceCreate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_namespace(db, ns_id)
+    ds = DataSource(
+        namespace_id=ns_id,
+        db_type=body.db_type,
+        host=body.host,
+        port=body.port,
+        database=body.database,
+        username=body.username,
+        password=body.password,
+    )
+    db.add(ds)
+    await db.commit()
+    await db.refresh(ds)
+    return ds
+
+
+@router.post("/{ns_id}/datasources/{ds_id}/test", response_model=DataSourceTestResult)
+async def test_datasource(
+    ns_id: int,
+    ds_id: int,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    ds = await db.get(DataSource, ds_id)
+    if not ds or ds.namespace_id != ns_id:
+        raise HTTPException(404, "数据源不存在")
+
+    try:
+        if ds.db_type == "mysql":
+            conn = pymysql.connect(
+                host=ds.host, port=ds.port, database=ds.database,
+                user=ds.username, password=ds.password, connect_timeout=5,
+            )
+            conn.close()
+        elif ds.db_type == "mongodb":
+            client = MongoClient(
+                host=ds.host, port=ds.port, username=ds.username,
+                password=ds.password, authSource="admin", serverSelectionTimeoutMS=5000,  # noqa: hardcode
+            )
+            client.admin.command("ping")
+            client.close()
+        return DataSourceTestResult(success=True, message="连接成功")
+    except Exception as e:
+        return DataSourceTestResult(success=False, message=str(e))
+
+
+@router.post("/{ns_id}/datasources/{ds_id}/refresh-schema", response_model=SchemaRefreshResult)
+async def refresh_schema(
+    ns_id: int,
+    ds_id: int,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """刷新数据源 schema — 数据库结构变更后调用"""
+    ns = await _get_namespace(db, ns_id)
+    ds = await db.get(DataSource, ds_id)
+    if not ds or ds.namespace_id != ns_id:
+        raise HTTPException(404, "数据源不存在")
+
+    if ds.db_type != "mysql":
+        return SchemaRefreshResult(success=False, message="当前仅支持 MySQL 数据源刷新 Schema")
+
+    try:
+        from app.knowledge.schema_canonical import refresh_mysql_canonicals
+        count = await refresh_mysql_canonicals(db, ns_id, ns.slug)
+        return SchemaRefreshResult(
+            success=True,
+            table_count=count,
+            message=f"Schema 已刷新, 识别到 {count} 张表",
+        )
+    except Exception as e:
+        return SchemaRefreshResult(success=False, message=f"Schema 刷新失败: {e}")
+
+
+@router.delete("/{ns_id}/datasources/{ds_id}", status_code=204)
+async def delete_datasource(
+    ns_id: int,
+    ds_id: int,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除数据源 — 外键约束会级联删除相关 repo mappings"""
+    await _get_namespace(db, ns_id)
+    ds = await db.get(DataSource, ds_id)
+    if not ds or ds.namespace_id != ns_id:
+        raise HTTPException(404, "数据源不存在")
+    # orphan hook: 在 CASCADE 删除前标记关联 candidate 为 orphaned
+    from app.knowledge.candidate_cleanup import orphan_candidates_for_datasource
+    await orphan_candidates_for_datasource(db, ds_id)
+    await db.delete(ds)
+    await db.commit()
+
+
+# ════════════════════════════════════════════
+#  工具函数
+# ════════════════════════════════════════════
+
+async def _get_namespace(db: AsyncSession, ns_id: int) -> Namespace:
+    ns = await db.get(Namespace, ns_id)
+    if not ns:
+        raise HTTPException(404, "命名空间不存在")
+    return ns

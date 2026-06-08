@@ -1,0 +1,189 @@
+"""Phase 2 Task 2.1 — 全量解析前置清场.
+
+# ════════════════════════════════════════════
+#  When this runs
+# ════════════════════════════════════════════
+# trainer 在执行 git 仓库的"全量重建"模式前调用本模块, 用于清扫上轮残留:
+#   1) 删除 source=git 的全部 KE (含 canonical — spec 2026-05-21 决策 1)
+#   2) 删除 namespace 内所有 open 状态的 Terminology 冲突 (重新解析后再产生)
+#   3) 写一条 audit_log (action='purge_for_full_rebuild', to_status='purged')
+#      含 cascade_audit_deleted / cascade_conflict_deleted 合规留痕
+#   4) commit 后 best-effort 清理 ChromaDB 知识池中已删 KE 的向量
+#
+# # ════════════════════════════════════════════
+# # Atomicity contract
+# # ════════════════════════════════════════════
+# 步骤 1-3 在 db.begin_nested() 单 savepoint 内, 任一步骤抛异常整体回滚.
+# 步骤 4 (ChromaDB 清理) best-effort, 单条失败仅日志, 不抛出
+# (避免污染数据库已 commit 的事实).
+"""
+
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.knowledge.knowledge_retriever import delete_knowledge_entry
+from app.logging_config import get_logger
+from app.models import Namespace
+from app.models.knowledge_audit_log import KnowledgeAuditLog
+from app.models.knowledge_entry import KnowledgeEntry
+from app.models.terminology_conflict import TerminologyConflict
+
+log = get_logger("trainer.purge")
+
+# ── 常量: 抹去 magic string, 单一真相源 ───────────────────────
+AUDIT_ACTION_PURGE = "purge_for_full_rebuild"
+PURGED_STATUS = "purged"
+OPEN_CONFLICT_STATUS = "open"
+
+
+async def _delete_legacy_kes(db: AsyncSession, repo_id: int) -> list[tuple[int, int | None, str]]:
+    """删 source∈{git, mybatis_extract} ∧ repo_id 的全部 KE — 不分 status (G1).
+
+    Returns: [(entry_id, namespace_id, entry_type), ...] 供 ChromaDB 清理.
+
+    设计契约 (spec 2026-05-21-git-source-full-purge 决策 1):
+        git 是真相源, 从 git 推导的所有知识应随 git 重新推导.
+        mybatis_extract 同理, 从 mybatis XML 推导的 example/route_hint 应随重建清除.
+        canonical 状态由人审标记, 但人审的对象 (上一轮 LLM 产出) 已过时,
+        保留 = 把 git 旧解读冻结成永恒. 推翻旧 "canonical 永不动" 宪章.
+    """
+    rows = (await db.execute(
+        select(
+            KnowledgeEntry.id,
+            KnowledgeEntry.namespace_id,
+            KnowledgeEntry.entry_type,
+        ).where(
+            KnowledgeEntry.repo_id == repo_id,
+            KnowledgeEntry.source.in_(["git", "mybatis_extract"]),
+        )
+    )).all()
+    if not rows:
+        return []
+    ids = [r[0] for r in rows]
+    await db.execute(
+        delete(KnowledgeEntry).where(KnowledgeEntry.id.in_(ids))
+    )
+    return [(r[0], r[1], r[2]) for r in rows]
+
+
+async def _delete_open_conflicts(db: AsyncSession, ns_id: int) -> int:
+    """删 ns 内 status=open 的 TerminologyConflict, 返回删除行数."""
+    tc = await db.execute(
+        delete(TerminologyConflict).where(
+            TerminologyConflict.namespace_id == ns_id,
+            TerminologyConflict.status == OPEN_CONFLICT_STATUS,
+        )
+    )
+    return tc.rowcount or 0  # type: ignore[union-attr]
+
+
+async def purge_legacy_for_full_rebuild(
+    db: AsyncSession,
+    repo_id: int,
+    ns_id: int,
+    target_identity_keys: set[tuple[str, str]] | None = None,
+    repo_name: str = "",
+) -> dict:
+    """全量重建前的清场.
+
+    Atomic semantics:
+        步骤 1-3 在 db.begin_nested() 内, 任一抛异常整体回滚.
+        步骤 4 (ChromaDB 清理) best-effort, 永不抛出.
+
+    Args:
+        db: 调用方持有的 AsyncSession (调用方负责最终 commit).
+        repo_id: 当前重建目标仓库.
+        ns_id: 当前命名空间.
+        target_identity_keys: 保留参数兼容旧调用方签名, 不再使用.
+
+    Returns:
+        {ke_deleted, fragments_deleted, canonicals_deleted, mongo_conflicts, term_conflicts}
+    """
+    deleted_ke_ids: list[tuple[int, int | None, str]] = []
+    tc_count = 0
+
+    # ── 1-3 原子 savepoint ────────────────────────────────────
+    async with db.begin_nested():
+        # ── 删前快照: 数指向待删 KE 的 audit / conflict (合规留痕) ──
+        preview_ke_ids = (await db.execute(
+            select(KnowledgeEntry.id).where(
+                KnowledgeEntry.repo_id == repo_id,
+                KnowledgeEntry.source.in_(["git", "mybatis_extract"]),
+            )
+        )).scalars().all()
+        # 按 source 分别计数 (审计可追溯) — 单次 GROUP BY
+        _count_rows = (await db.execute(
+            select(
+                KnowledgeEntry.source,
+                func.count(KnowledgeEntry.id),
+            ).where(
+                KnowledgeEntry.repo_id == repo_id,
+                KnowledgeEntry.source.in_(["git", "mybatis_extract"]),
+            ).group_by(KnowledgeEntry.source)
+        )).all()
+        source_counts: dict[str, int] = {row[0]: row[1] for row in _count_rows}
+        git_ke_count = source_counts.get("git", 0)
+        mybatis_ke_count = source_counts.get("mybatis_extract", 0)
+        if preview_ke_ids:
+            cascade_audit_n = (await db.execute(
+                select(func.count(KnowledgeAuditLog.id)).where(
+                    KnowledgeAuditLog.entry_id.in_(preview_ke_ids),
+                )
+            )).scalar_one()
+            cascade_conflict_n = (await db.execute(
+                select(func.count(TerminologyConflict.id)).where(
+                    TerminologyConflict.existing_entry_id.in_(preview_ke_ids),
+                )
+            )).scalar_one()
+        else:
+            cascade_audit_n = 0
+            cascade_conflict_n = 0
+
+        # ── 删 KE (G1: source∈{git, mybatis_extract} ∧ repo_id 全删, 不分 status) ──
+        deleted_ke_ids = await _delete_legacy_kes(db, repo_id)
+
+        # ── 兜底清 open conflict (G5) ──
+        tc_count = await _delete_open_conflicts(db, ns_id)
+
+        reason = (
+            f"trainer_full_rebuild repo={repo_id} ns={ns_id} "
+            f"ke_deleted={len(deleted_ke_ids)} (git={git_ke_count}, mybatis_extract={mybatis_ke_count}) "
+            f"cascade_audit_deleted={cascade_audit_n} "
+            f"cascade_conflict_deleted={cascade_conflict_n} "
+            f"open_tc_deleted={tc_count}"
+        )
+        db.add(KnowledgeAuditLog(
+            entry_id=None,
+            actor_id=None,
+            action=AUDIT_ACTION_PURGE,
+            from_status=None,
+            to_status=PURGED_STATUS,
+            reason=reason,
+        ))
+        await db.flush()
+
+    # ── 4. ChromaDB best-effort 同步 ──────────────────────────
+    if deleted_ke_ids:
+        ns_slug: str | None = (await db.execute(
+            select(Namespace.slug).where(Namespace.id == ns_id)
+        )).scalar_one_or_none()
+        if ns_slug:
+            for eid, _ns_id, etype in deleted_ke_ids:
+                try:
+                    delete_knowledge_entry(
+                        slug=ns_slug, entry_id=eid, namespace_id=_ns_id,
+                        entry_type=etype,
+                    )
+                except Exception as e:  # noqa: BLE001 — best-effort, 永不阻业务
+                    log.warning(
+                        "[purge][%s] chroma delete failed repo=%d ns=%s entry_id=%d: %s",
+                        repo_name, repo_id, ns_slug, eid, e,
+                    )
+
+    return {
+        "ke_deleted": len(deleted_ke_ids),
+        "fragments_deleted": 0,
+        "canonicals_deleted": 0,
+        "mongo_conflicts": 0,
+        "term_conflicts": tc_count,
+    }

@@ -1,0 +1,341 @@
+/* ════════════════════════════════════════════
+ *  QueryPage — 气泡 + 图表卡片 + 输入区
+ * ════════════════════════════════════════════ */
+
+/* ── 页面容器 ── */
+.pageContainer {
+  max-width: 960px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 56px);
+  min-height: 0;
+}
+
+/* 非 idle 对话布局: 顶部栏 / 中间可滚 / 底部输入框 */
+.chatHeader {
+  flex-shrink: 0;
+  padding: 8px 0;
+}
+
+.chatScroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 8px 4px;
+}
+
+.chatFooter {
+  flex-shrink: 0;
+}
+
+/* ── 空状态居中布局 (参考 kimi.com) ── */
+.emptyState {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 32px;
+}
+
+.emptyStateContent {
+  width: 100%;
+  max-width: 1000px; /* kimi 风格：宽大气派 */
+  text-align: center;
+}
+
+.emptyStateTitle {
+  font-size: 32px; /* 更大更醒目 */
+  font-weight: 600;
+  color: #1e3a5f;
+  margin: 0 0 12px;
+  letter-spacing: -0.5px;
+}
+
+.emptyStateSubtitle {
+  font-size: 15px;
+  color: #64748b;
+  margin: 0 0 48px; /* 增加与输入框的距离 */
+}
+
+.centeredInputWrapper {
+  width: 100%;
+}
+
+/* ── 消息容器 ── */
+.messageList {
+  flex: 1;
+  padding: 20px 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.messageRow {
+  display: flex;
+}
+
+.messageRowUser {
+  composes: messageRow;
+  justify-content: flex-end;
+}
+
+.messageRowAssistant {
+  composes: messageRow;
+  justify-content: flex-start;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 85%;
+}
+
+.messageRowSystem {
+  composes: messageRow;
+  justify-content: flex-start;
+}
+
+/* ── 用户气泡 ── */
+.bubbleUser {
+  max-width: 70%;
+  background: #2563eb;
+  color: white;
+  padding: 12px 16px;
+  border-radius: 16px 16px 4px 16px;
+  font-size: 13px;
+  line-height: 1.6;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.2);
+}
+
+/* ── AI 气泡 ── */
+.bubbleAssistant {
+  background: #ffffff;
+  border: 1px solid #e0e7ff;
+  padding: 12px 16px;
+  border-radius: 4px 16px 16px 16px;
+  font-size: 13px;
+  color: #1e3a5f;
+  line-height: 1.6;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+/* ── 系统消息 ── */
+.bubbleSystem {
+  max-width: 70%;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  padding: 12px 16px;
+  border-radius: 4px 16px 16px 16px;
+  font-size: 13px;
+  color: #991b1b;
+  line-height: 1.6;
+}
+
+/* ── AI 追问标签 ── */
+.clarificationBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #f59e0b;
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+/* ── SQL 代码块 ── */
+.sqlBlock {
+  display: block;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 11px;
+  color: #475569;
+  font-family: "SF Mono", Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+/* ── 图表卡片 ── */
+.chartCard {
+  background: white;
+  border: 1px solid #e0e7ff;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.06);
+}
+
+.chartHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+/* ── 图表类型切换器 ── */
+.chartSwitcher {
+  display: flex;
+  gap: 2px;
+  background: #f0f4ff;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.chartSwitcherItem {
+  padding: 4px 10px;
+  font-size: 11px;
+  color: #64748b;
+  cursor: pointer;
+  border-radius: 4px;
+  border: none;
+  background: none;
+  transition: background 0.15s, color 0.15s;
+}
+
+.chartSwitcherItemActive {
+  composes: chartSwitcherItem;
+  background: white;
+  color: #2563eb;
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+/* ── 输入区 ── */
+.inputArea {
+  padding: 16px 0;
+  display: flex;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+/* 外框: Kimi 风格, textarea + 底部工具栏纵向堆叠 */
+.inputBox {
+  flex: 1;
+  background: white;
+  border: 1.5px solid #dbeafe;
+  border-radius: 20px;
+  padding: 14px 18px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.inputBox:focus-within {
+  border-color: #2563eb;
+  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.12);
+}
+
+.inputTextarea {
+  font-size: 15px;
+  color: #1e3a5f;
+  line-height: 1.6;
+  resize: none;
+  padding: 0 !important;
+  outline: none;
+  box-shadow: none !important;
+}
+
+.inputTextarea:focus,
+.inputTextarea:focus-visible {
+  outline: none;
+  box-shadow: none !important;
+}
+
+.inputTextarea::placeholder {
+  color: #94a3b8;
+}
+
+.inputToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* send 按钮 — 圆形, 无内容时灰, 有内容时蓝 */
+.sendButton,
+.sendButtonActive {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  outline: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: white;
+  font-size: 14px;
+  flex-shrink: 0;
+  transition: background 0.15s, opacity 0.15s, transform 0.15s;
+}
+
+.sendButton:focus,
+.sendButton:focus-visible,
+.sendButtonActive:focus,
+.sendButtonActive:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.sendButton {
+  background: #cbd5e1;
+  cursor: not-allowed;
+}
+
+.sendButtonActive {
+  background: linear-gradient(135deg, #2563eb, #3b82f6);
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+}
+
+.sendButtonActive:hover {
+  opacity: 0.92;
+  transform: translateY(-1px);
+}
+
+.sendButtonActive:active {
+  transform: translateY(0);
+}
+
+.sendButton:disabled,
+.sendButtonActive:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ── Idle 空态: logo + 输入框 整体垂直居中 (Kimi 风格) ── */
+.pageIdle {
+  justify-content: center;
+}
+
+.idleWrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 32px;
+  margin-bottom: 120px; /* 视觉重心略上移 */
+}
+
+.logo {
+  text-align: center;
+  font-size: 72px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  color: #1e3a5f;
+  line-height: 1;
+  user-select: none;
+}
+
+/* ── 结果统计行 ── */
+.resultMeta {
+  font-size: 12px;
+  color: #64748b;
+}
+
+/* ── Loading ── */
+.loading {
+  text-align: center;
+  padding: 24px;
+  color: #93c5fd;
+}

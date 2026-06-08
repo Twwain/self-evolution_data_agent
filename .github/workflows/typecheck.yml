@@ -1,0 +1,35 @@
+name: typecheck
+
+on:
+  pull_request:
+    branches: [master, main]
+  push:
+    branches:
+      - master
+      - main
+      - 'feature/**'
+      - 'fix/**'
+
+jobs:
+  pyright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend deps
+        working-directory: backend
+        run: |
+          pip install --upgrade pip
+          pip install .
+
+      - name: Install pyright
+        run: pip install pyright==1.1.408
+
+      - name: Run pyright baseline check
+        # 锁 .pyright-baseline.txt 既有 errors, 新增 0 容忍.
+        # 修复既有 → 跑 python scripts/pyright_baseline.py --regenerate 更新 baseline.
+        run: python scripts/pyright_baseline.py

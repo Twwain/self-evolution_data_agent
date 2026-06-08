@@ -1,0 +1,28 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend-data:/app/data
+    environment:
+      - IS_LLM_PROVIDER=${IS_LLM_PROVIDER:-qwen}
+      - IS_LLM_API_KEY=${IS_LLM_API_KEY}
+      - IS_LLM_BASE_URL=${IS_LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      - IS_LLM_MODEL=${IS_LLM_MODEL:-qwen-plus}
+      - IS_CLAUDE_API_KEY=${IS_CLAUDE_API_KEY}
+      - IS_CLAUDE_MODEL=${IS_CLAUDE_MODEL:-claude-sonnet-4-20250514}
+      - IS_CLAUDE_BASE_URL=${IS_CLAUDE_BASE_URL:-https://api.anthropic.com}
+      - IS_GIT_TOKEN=${IS_GIT_TOKEN}
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backend-data:

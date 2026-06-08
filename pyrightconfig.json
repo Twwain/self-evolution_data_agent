@@ -1,0 +1,23 @@
+{
+  "include": ["backend/app"],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.venv",
+    "backend/scripts",
+    "backend/tests",
+    "backend/data"
+  ],
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Darwin",
+  "venvPath": "/Users/vincent/.pyenv/versions",
+  "venv": "3.11.9",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "error",
+  "reportAttributeAccessIssue": "error",
+  "reportArgumentType": "error",
+  "reportPossiblyUnbound": "error",
+  "reportInvalidTypeForm": "warning",
+  "reportGeneralTypeIssues": "error",
+  "useLibraryCodeForTypes": true
+}
