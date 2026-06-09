@@ -424,6 +424,9 @@ async def run_training_pipeline_with_progress(
                 introspect_db, ns_id, ns_slug,
                 referenced_tables=referenced_tables,
                 repo_name=name,
+                # 不在此内部 promote: 汇聚交给 step 6.5 maybe_trigger_promote 统一
+                # 处理 (与 MongoDB 候选路径对齐), 避免同一训练内重复全量 promote.
+                trigger_promote=False,
             )
             await introspect_db.commit()
             log.info("[%s] MySQL introspect 完成, 处理表数=%d", name, ds_count)

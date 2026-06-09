@@ -3,8 +3,8 @@
 覆盖:
   - _is_transient_llm_error 异常分类 (5xx/Timeout/Connection → True; ValueError → False)
   - settings.llm_retry_max / agent_loop_context_limit_tokens 配置项存在性
-  - _qwen_chat_with_retry 第二次成功时总调用次数 = 2
-  - _qwen_chat_with_retry 非 transient 错误不重试 (只调一次)
+  - _openai_chat_with_retry 第二次成功时总调用次数 = 2
+  - _openai_chat_with_retry 非 transient 错误不重试 (只调一次)
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ class TestRetryRespectsConfig:
 # ─────────────────────────────────────────────────────────────
 
 class TestRetryBehavior:
-    """完整 retry 流程 — mock _qwen_chat 抛 transient 错误验证重试逻辑."""
+    """完整 retry 流程 — mock _openai_chat 抛 transient 错误验证重试逻辑."""
 
     def test_retry_succeeds_on_second_attempt(self, monkeypatch):
         import openai
@@ -91,18 +91,18 @@ class TestRetryBehavior:
 
         call_count = {"n": 0}
 
-        def fake_qwen_chat(messages, temp, max_tokens):
+        def fake_openai_chat(messages, temp, max_tokens):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise openai.APIConnectionError(request=MagicMock())
             return "ok"
 
-        monkeypatch.setattr(llm_mod, "_qwen_chat", fake_qwen_chat)
+        monkeypatch.setattr(llm_mod, "_openai_chat", fake_openai_chat)
         monkeypatch.setattr(settings, "llm_retry_max", 2)
         # 防止真实 sleep 拖慢测试
         monkeypatch.setattr(llm_mod.time, "sleep", lambda _: None)
 
-        result = llm_mod._qwen_chat_with_retry([], 0.1, 100)
+        result = llm_mod._openai_chat_with_retry([], 0.1, 100)
         assert result == "ok"
         assert call_count["n"] == 2
 
@@ -111,15 +111,15 @@ class TestRetryBehavior:
 
         call_count = {"n": 0}
 
-        def fake_qwen_chat(messages, temp, max_tokens):
+        def fake_openai_chat(messages, temp, max_tokens):
             call_count["n"] += 1
             raise ValueError("bad input")
 
-        monkeypatch.setattr(llm_mod, "_qwen_chat", fake_qwen_chat)
+        monkeypatch.setattr(llm_mod, "_openai_chat", fake_openai_chat)
         monkeypatch.setattr(settings, "llm_retry_max", 3)
 
         with pytest.raises(ValueError):
-            llm_mod._qwen_chat_with_retry([], 0.1, 100)
+            llm_mod._openai_chat_with_retry([], 0.1, 100)
         assert call_count["n"] == 1  # 非 transient, 立即 raise, 不重试
 
     def test_retry_exhausted_reraises(self, monkeypatch):
@@ -129,16 +129,16 @@ class TestRetryBehavior:
 
         call_count = {"n": 0}
 
-        def fake_qwen_chat(messages, temp, max_tokens):
+        def fake_openai_chat(messages, temp, max_tokens):
             call_count["n"] += 1
             raise openai.APITimeoutError(request=MagicMock())
 
-        monkeypatch.setattr(llm_mod, "_qwen_chat", fake_qwen_chat)
+        monkeypatch.setattr(llm_mod, "_openai_chat", fake_openai_chat)
         monkeypatch.setattr(settings, "llm_retry_max", 2)
         monkeypatch.setattr(llm_mod.time, "sleep", lambda _: None)
 
         with pytest.raises(openai.APITimeoutError):
-            llm_mod._qwen_chat_with_retry([], 0.1, 100)
+            llm_mod._openai_chat_with_retry([], 0.1, 100)
         # 1 次原始调用 + 2 次重试 = 3 次
         assert call_count["n"] == 3
 
@@ -149,13 +149,13 @@ class TestRetryBehavior:
 
         call_count = {"n": 0}
 
-        def fake_qwen_chat(messages, temp, max_tokens):
+        def fake_openai_chat(messages, temp, max_tokens):
             call_count["n"] += 1
             raise openai.APIConnectionError(request=MagicMock())
 
-        monkeypatch.setattr(llm_mod, "_qwen_chat", fake_qwen_chat)
+        monkeypatch.setattr(llm_mod, "_openai_chat", fake_openai_chat)
         monkeypatch.setattr(settings, "llm_retry_max", 0)
 
         with pytest.raises(openai.APIConnectionError):
-            llm_mod._qwen_chat_with_retry([], 0.1, 100)
+            llm_mod._openai_chat_with_retry([], 0.1, 100)
         assert call_count["n"] == 1  # 禁用 retry, 只调一次

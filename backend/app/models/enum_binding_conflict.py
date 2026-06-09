@@ -18,6 +18,7 @@ class EnumBindingConflict(Base):
             "uq_enum_conflict_open",
             "field_canonical_id", "field_name", "enum_dict_id",
             unique=True,
+            postgresql_where=text("status = 'open'"),
             sqlite_where=text("status = 'open'"),
         ),
     )

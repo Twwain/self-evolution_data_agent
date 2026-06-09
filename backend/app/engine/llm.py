@@ -51,15 +51,15 @@ def _sanitize_tool_use_id(raw_id: str) -> str:
 
 
 # ── 懒初始化的客户端单例 ──
-_qwen_client: OpenAI | None = None
+_openai_client: OpenAI | None = None
 _claude_client: anthropic.Anthropic | None = None
 
 
-def _get_qwen_client() -> OpenAI:
-    global _qwen_client
-    if _qwen_client is None:
-        _qwen_client = OpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url)
-    return _qwen_client
+def _get_openai_client() -> OpenAI:
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url)
+    return _openai_client
 
 
 def _get_claude_client() -> anthropic.Anthropic:
@@ -146,7 +146,7 @@ def _is_transient_llm_error(exc: BaseException) -> bool:
     if isinstance(exc, EmptyLLMResponseError):
         return True
 
-    # ── OpenAI 兼容 (Qwen) ──
+    # ── OpenAI 兼容 (默认线路: 任何 OpenAI-shaped 端点) ──
     if isinstance(exc, (openai.APITimeoutError, openai.APIConnectionError)):
         return True
     if isinstance(exc, openai.APIStatusError):
@@ -180,17 +180,18 @@ def chat_completion(
     """
     provider = provider or settings.llm_provider
 
-    if provider == "claude":
+    if provider == "anthropic":
         return _claude_chat_with_retry(messages, temperature, max_tokens)
-    return _qwen_chat_with_retry(messages, temperature, max_tokens)
+    return _openai_chat_with_retry(messages, temperature, max_tokens)
 
 
 # ════════════════════════════════════════════
-#  Qwen — OpenAI 兼容接口, 直通
+#  OpenAI — OpenAI Chat Completions 协议, 直通
+#  (DashScope / DeepSeek / vLLM / 官方 OpenAI 等任意兼容端点)
 # ════════════════════════════════════════════
 
-def _qwen_chat(messages: list[dict], temperature: float, max_tokens: int) -> str:
-    client = _get_qwen_client()
+def _openai_chat(messages: list[dict], temperature: float, max_tokens: int) -> str:
+    client = _get_openai_client()
     resp = client.chat.completions.create(
         model=settings.llm_model,
         messages=messages,  # type: ignore[arg-type]
@@ -207,7 +208,7 @@ def _qwen_chat(messages: list[dict], temperature: float, max_tokens: int) -> str
             output_tokens=getattr(usage, "completion_tokens", None),
         )
         raise EmptyLLMResponseError(
-            f"Qwen returned empty content (model={settings.llm_model}, "
+            f"OpenAI-compatible endpoint returned empty content (model={settings.llm_model}, "
             f"finish_reason={resp.choices[0].finish_reason})"
         )
     _record_generation(
@@ -218,19 +219,19 @@ def _qwen_chat(messages: list[dict], temperature: float, max_tokens: int) -> str
     return text
 
 
-def _qwen_chat_with_retry(messages: list[dict], temperature: float, max_tokens: int) -> str:
-    """Qwen chat with transient-error retry (指数退避, 最多 settings.llm_retry_max 次重试)."""
+def _openai_chat_with_retry(messages: list[dict], temperature: float, max_tokens: int) -> str:
+    """OpenAI-compatible chat + transient-error retry (指数退避, 上限 llm_retry_max)."""
     last_exc: BaseException | None = None
     for attempt in range(settings.llm_retry_max + 1):
         try:
-            return _qwen_chat(messages, temperature, max_tokens)
+            return _openai_chat(messages, temperature, max_tokens)
         except Exception as e:
             if not _is_transient_llm_error(e) or attempt == settings.llm_retry_max:
                 raise
             last_exc = e
             wait_secs = min(2 ** attempt, 10)
             logger.warning(
-                "qwen transient error retry %d/%d after %ds: %s",
+                "openai transient error retry %d/%d after %ds: %s",
                 attempt + 1, settings.llm_retry_max, wait_secs, e,
             )
             time.sleep(wait_secs)
@@ -423,13 +424,13 @@ def chat_completion_checked(
     """同 chat_completion, 但额外返回截断状态 (finish_reason == length/max_tokens)"""
     provider = provider or settings.llm_provider
 
-    if provider == "claude":
+    if provider == "anthropic":
         return _claude_chat_checked(messages, temperature, max_tokens)
-    return _qwen_chat_checked(messages, temperature, max_tokens)
+    return _openai_chat_checked(messages, temperature, max_tokens)
 
 
-def _qwen_chat_checked(messages: list[dict], temperature: float, max_tokens: int) -> LLMResponse:
-    client = _get_qwen_client()
+def _openai_chat_checked(messages: list[dict], temperature: float, max_tokens: int) -> LLMResponse:
+    client = _get_openai_client()
     resp = client.chat.completions.create(
         model=settings.llm_model,
         messages=messages,  # type: ignore[arg-type]
@@ -550,27 +551,27 @@ async def chat_completion_with_tools(
         {"name": str, "description": str, "input_schema": {json schema}}
 
     内部按 provider 分流:
-        - claude → Anthropic tool_use block
-        - qwen   → DashScope OpenAI 兼容 function calling
+        - anthropic → Anthropic tool_use block (Claude)
+        - openai → OpenAI Chat Completions function calling (DashScope / DeepSeek / vLLM / …)
     stream_callback 在 Stage 5 SSE 接入, 当前轮次完整返回, 不分块推送.
     """
     provider = provider or settings.llm_provider
-    if provider == "claude":
+    if provider == "anthropic":
         return await asyncio.to_thread(
             _claude_tool_use, messages, tools, temperature, max_tokens,
         )
     return await asyncio.to_thread(
-        _qwen_tool_use, messages, tools, temperature, max_tokens,
+        _openai_tool_use, messages, tools, temperature, max_tokens,
     )
 
 
-# ── Qwen (OpenAI-compatible function calling) ──
+# ── OpenAI-compatible (Chat Completions function calling) ──
 
-def _qwen_tool_use(
+def _openai_tool_use(
     messages: list[dict], tools: list[dict],
     temperature: float, max_tokens: int,
 ) -> ToolUseResponse:
-    client = _get_qwen_client()
+    client = _get_openai_client()
     openai_tools = [
         {
             "type": "function",
@@ -747,5 +748,5 @@ def _safe_json_loads(raw: str | None) -> dict:
         parsed = json.loads(raw)
         return parsed if isinstance(parsed, dict) else {}
     except json.JSONDecodeError:
-        logger.warning("Qwen tool arguments not valid JSON: %r", raw[:200])
+        logger.warning("OpenAI-compatible tool arguments not valid JSON: %r", raw[:200])
         return {}

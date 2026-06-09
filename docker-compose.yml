@@ -6,7 +6,7 @@ services:
     volumes:
       - backend-data:/app/data
     environment:
-      - IS_LLM_PROVIDER=${IS_LLM_PROVIDER:-qwen}
+      - IS_LLM_PROVIDER=${IS_LLM_PROVIDER:-openai}
       - IS_LLM_API_KEY=${IS_LLM_API_KEY}
       - IS_LLM_BASE_URL=${IS_LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       - IS_LLM_MODEL=${IS_LLM_MODEL:-qwen-plus}

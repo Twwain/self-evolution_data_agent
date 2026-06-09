@@ -107,6 +107,7 @@ async def refresh_mysql_canonicals(
     ns_slug: str,
     referenced_tables: set[str] | None = None,
     repo_name: str = "",
+    trigger_promote: bool = True,
 ) -> int:
     """从 MySQLDriver introspect 写入 candidate 层 (不再直写 SchemaCanonicalObject).
 
@@ -114,9 +115,13 @@ async def refresh_mysql_canonicals(
         referenced_tables: 仅 introspect 集合内的表名 (per-repo 范围收窄).
             None → 全表 introspect (手动按钮路径保留旧语义).
             空 set → 早返 0 (本 repo 无 mysql 引用, noop).
+        trigger_promote: 写完 candidate 后是否内部触发 promote + 索引补充.
+            True (默认, 手动刷新端点用) → 自给自足汇聚, 因端点无后续汇聚步骤.
+            False (trainer step 6.4 用) → 只写候选, 汇聚交给 step 6.5 的
+            maybe_trigger_promote 统一处理, 与 MongoDB 候选路径对齐, 避免
+            同一训练内重复全量 promote (历史冗余, 见 stage-b spec).
 
     返回处理的表数量 (backward compat). 调用方负责 commit.
-    写完 candidate 后自动调 promote_candidates_to_canonical 触发汇聚.
     """
     from sqlalchemy import select as sa_select
 
@@ -172,8 +177,8 @@ async def refresh_mysql_canonicals(
                 repo_name, ds.id, e,
             )
 
-    # 写完所有 candidate 后触发 promote
-    if table_count > 0:
+    # 写完所有 candidate 后触发 promote (仅 trigger_promote=True)
+    if table_count > 0 and trigger_promote:
         await promote_candidates_to_canonical(db, namespace_id)
         # promote 后补充索引信息 (indexes_json + field indexed)
         await backfill_indexes_from_driver(db, namespace_id, db_type="mysql")

@@ -10,8 +10,10 @@ from pydantic import model_validator
 class Settings(BaseSettings):
     model_config = {"env_prefix": "IS_", "env_file": ".env"}
 
-    # ── LLM 提供商 ──
-    llm_provider: str = "qwen"  # qwen | claude
+    # ── LLM 提供商 (按线协议而非厂商分轴) ──
+    #   openai    → OpenAI Chat Completions 协议 (DashScope/Qwen, DeepSeek, vLLM, 官方 OpenAI…)
+    #   anthropic → Anthropic Messages 协议 (Claude)
+    llm_provider: str = "openai"  # openai | anthropic
 
     # ── Qwen (DashScope) ──
     llm_api_key: str = ""

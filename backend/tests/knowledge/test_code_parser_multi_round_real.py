@@ -29,7 +29,7 @@ from app.knowledge.code_parser import (
 
 def _llm_key_present() -> bool:
     """根据 provider 选择对应的 API key 字段."""
-    if settings.llm_provider == "claude":
+    if settings.llm_provider == "anthropic":
         return bool(settings.claude_api_key)
     return bool(settings.llm_api_key)
 

@@ -405,6 +405,10 @@ async def run_all(engine: AsyncEngine) -> None:
     ])
     # migration_017 (Stage 2 抓手 E): agent_traces 新表
     await _ensure_agent_traces_table(engine)
+    # migration_018 (partial-index-repair): 修复 conflict 唯一索引被建成全表
+    # unique 的历史问题 (model 误用 sqlite_where, PostgreSQL 上被忽略 →
+    # create_all 建成全表 unique, resolved 行占位阻挡同字段重新开 conflict).
+    await _repair_open_conflict_partial_indexes(engine)
 
 
 async def _ensure_schema_canonical_objects_table(engine: AsyncEngine) -> None:
@@ -580,6 +584,52 @@ async def _ensure_schema_canonical_phase1_tables(engine: AsyncEngine) -> None:
         "[schema_migrations] Phase 1 tables (candidate / conflict / audit_log / "
         "failure_log) + partial unique index ensured (migration_010)"
     )
+
+
+async def _repair_open_conflict_partial_indexes(engine: AsyncEngine) -> None:
+    """migration_018 (partial-index-repair): 把误建为全表 unique 的两个
+    "单字段同时只能一个 open conflict" 索引重建为 PostgreSQL partial unique
+    (WHERE status='open').
+
+    历史原因: model __table_args__ 仅写 sqlite_where, PostgreSQL 上该谓词被
+    忽略 → Base.metadata.create_all 先建成全表 unique 索引 → 后续 migration_010
+    的 CREATE ... IF NOT EXISTS 见同名索引已存在直接跳过, 全表约束永久生效.
+    后果: resolved 行占位, 同字段无法重新开 conflict, promote 撞 UniqueViolation.
+
+    修复策略: DROP 旧索引 → 按 partial 谓词重建. 重建前已验证无重复 open 行,
+    且本函数对每个索引检查现有 indexdef, 已是 partial (含 WHERE) 则跳过, 保证
+    幂等 & 不误删正确索引.
+    """
+    targets = [
+        (
+            "uq_one_open_conflict_per_field",
+            "schema_canonical_conflicts",
+            "(namespace_id, db_type, database, target, field_path, candidate_kind)",
+        ),
+        (
+            "uq_enum_conflict_open",
+            "enum_binding_conflicts",
+            "(field_canonical_id, field_name, enum_dict_id)",
+        ),
+    ]
+    async with engine.begin() as conn:
+        for index_name, table, cols in targets:
+            indexdef = (await conn.execute(
+                text("SELECT indexdef FROM pg_indexes WHERE indexname = :n"),
+                {"n": index_name},
+            )).scalar_one_or_none()
+            # 已是 partial (含 WHERE 谓词) → 幂等跳过
+            if indexdef is not None and "WHERE" in indexdef.upper():
+                continue
+            await conn.execute(text(f"DROP INDEX IF EXISTS {index_name}"))
+            await conn.execute(text(
+                f"CREATE UNIQUE INDEX {index_name} ON {table}{cols} "
+                "WHERE status = 'open'"
+            ))
+            log.info(
+                "[schema_migrations] rebuilt %s as partial unique (WHERE status='open') "
+                "(migration_018)", index_name,
+            )
 
 
 async def _drop_mongo_canonical_layer(engine: AsyncEngine) -> None:

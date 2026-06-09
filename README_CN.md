@@ -82,8 +82,8 @@ cp .env.example .env
 ```
 
 ```dotenv
-# LLM 提供商: qwen | claude
-IS_LLM_PROVIDER=qwen
+# LLM 提供商 (按线协议): openai | anthropic
+IS_LLM_PROVIDER=openai
 IS_LLM_API_KEY=your-dashscope-api-key
 IS_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 IS_LLM_MODEL=qwen-plus
@@ -183,7 +183,7 @@ text-to-SQL 库把一个 prompt 翻译成一句 SQL。Self-Evolution Data Agent 
 不需要。业务人员用自然语言提问，Agent 自动为 MySQL 或 MongoDB 生成并执行查询。
 
 **支持哪些 LLM？**
-开箱支持 Qwen 和 Claude。设置 `IS_LLM_BASE_URL` 与 `IS_LLM_PROVIDER` 后，任意 OpenAI 兼容端点（GPT、DeepSeek、本地 vLLM / Ollama）均可接入。
+开箱支持 Qwen 和 Claude。`IS_LLM_PROVIDER` 按线协议选路 —— `openai`（任意 OpenAI 兼容端点：GPT、DeepSeek、Qwen/DashScope、本地 vLLM / Ollama，配合 `IS_LLM_BASE_URL`）或 `anthropic`（Claude）。
 
 **我的生产库安全吗？**
 连接为只读。Agent 永不修改表结构、不装插件、不动业务代码。SQL 仅 `SELECT`，并强制行数上限与执行前行数预检。

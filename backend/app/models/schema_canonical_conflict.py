@@ -21,11 +21,15 @@ class SchemaCanonicalConflict(Base):
     __table_args__ = (
         Index("idx_conflict_open", "namespace_id", "status"),
         # 修订 #4 partial unique: 仅 status='open' 行参与唯一约束.
+        # postgresql_where 是生产/测试 (PostgreSQL) 唯一生效的 partial 谓词;
+        # sqlite_where 仅为遗留 SQLite 归档库保留. 二者缺一会导致该 dialect 下
+        # 建成全表 unique 索引, resolved 行占位阻挡同字段重新开 conflict.
         Index(
             "uq_one_open_conflict_per_field",
             "namespace_id", "db_type", "database", "target",
             "field_path", "candidate_kind",
             unique=True,
+            postgresql_where=text("status = 'open'"),
             sqlite_where=text("status = 'open'"),
         ),
     )

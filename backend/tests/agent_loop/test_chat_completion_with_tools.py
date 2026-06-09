@@ -2,7 +2,7 @@
 
 真实 LLM 调用 (skipif 缺 key), 不 mock. 验证:
 - ToolCall / ToolUseResponse dataclass 字段
-- 中性 tool spec 双 provider 都能解析 (Qwen + Claude)
+- 中性 tool spec 双 provider 都能解析 (OpenAI 协议 + Anthropic 协议)
 - LLM 选择调 tool 时 stop_reason == "tool_use" 且 tool_calls 非空
 - LLM 直接回答时 stop_reason == "end_turn" 且 tool_calls == []
 - 后续轮次 tool_result 回喂可被消费 (消息形态正确)
@@ -32,7 +32,7 @@ WEATHER_TOOL = {
 }
 
 
-def _qwen_available() -> bool:
+def _openai_available() -> bool:
     return bool(settings.llm_api_key)
 
 
@@ -59,15 +59,15 @@ def test_dataclass_fields_present() -> None:
     assert resp.usage["input_tokens"] == 10
 
 
-@pytest.mark.skipif(not _qwen_available(), reason="IS_LLM_API_KEY 未配置")
+@pytest.mark.skipif(not _openai_available(), reason="IS_LLM_API_KEY 未配置")
 @pytest.mark.asyncio
-async def test_qwen_returns_tool_call_for_weather_question() -> None:
-    """Qwen: 问天气问题应选择调 get_weather tool."""
+async def test_openai_returns_tool_call_for_weather_question() -> None:
+    """OpenAI 协议: 问天气问题应选择调 get_weather tool."""
     messages = [{"role": "user", "content": "北京今天天气怎么样?"}]
     resp = await chat_completion_with_tools(
         messages=messages,
         tools=[WEATHER_TOOL],
-        provider="qwen",
+        provider="openai",
     )
     assert isinstance(resp, ToolUseResponse)
     assert resp.stop_reason in {"tool_use", "tool_calls"}
@@ -78,15 +78,15 @@ async def test_qwen_returns_tool_call_for_weather_question() -> None:
     assert tc.id  # 必须有 id 用于回喂配对
 
 
-@pytest.mark.skipif(not _qwen_available(), reason="IS_LLM_API_KEY 未配置")
+@pytest.mark.skipif(not _openai_available(), reason="IS_LLM_API_KEY 未配置")
 @pytest.mark.asyncio
-async def test_qwen_no_tool_call_for_pure_chat() -> None:
-    """Qwen: 纯闲聊问题不应调 tool."""
+async def test_openai_no_tool_call_for_pure_chat() -> None:
+    """OpenAI 协议: 纯闲聊问题不应调 tool."""
     messages = [{"role": "user", "content": "1 加 1 等于几? 一个字回答."}]
     resp = await chat_completion_with_tools(
         messages=messages,
         tools=[WEATHER_TOOL],
-        provider="qwen",
+        provider="openai",
     )
     assert resp.stop_reason in {"end_turn", "stop"}
     assert resp.tool_calls == []
@@ -101,7 +101,7 @@ async def test_claude_returns_tool_call_for_weather_question() -> None:
     resp = await chat_completion_with_tools(
         messages=messages,
         tools=[WEATHER_TOOL],
-        provider="claude",
+        provider="anthropic",
     )
     assert isinstance(resp, ToolUseResponse)
     assert resp.stop_reason == "tool_use"
@@ -120,7 +120,7 @@ async def test_claude_no_tool_call_for_pure_chat() -> None:
     resp = await chat_completion_with_tools(
         messages=messages,
         tools=[WEATHER_TOOL],
-        provider="claude",
+        provider="anthropic",
     )
     assert resp.stop_reason == "end_turn"
     assert resp.tool_calls == []

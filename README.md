@@ -80,8 +80,8 @@ cp .env.example .env
 ```
 
 ```dotenv
-# LLM provider: qwen | claude
-IS_LLM_PROVIDER=qwen
+# LLM provider (by wire protocol): openai | anthropic
+IS_LLM_PROVIDER=openai
 IS_LLM_API_KEY=your-dashscope-api-key
 IS_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 IS_LLM_MODEL=qwen-plus
@@ -181,7 +181,7 @@ A text-to-SQL library translates one prompt into one SQL string. Self-Evolution 
 No. Business users ask in natural language. The agent generates and executes the query for MySQL or MongoDB.
 
 **Which LLMs are supported?**
-Qwen and Claude out of the box. Any OpenAI-compatible endpoint (GPT, DeepSeek, local vLLM / Ollama) works by setting `IS_LLM_BASE_URL` and `IS_LLM_PROVIDER`.
+Qwen and Claude out of the box. `IS_LLM_PROVIDER` selects the wire protocol — `openai` (any OpenAI-compatible endpoint: GPT, DeepSeek, Qwen/DashScope, local vLLM / Ollama, via `IS_LLM_BASE_URL`) or `anthropic` (Claude).
 
 **Is my production database safe?**
 Connections are read-only. The agent never alters table structures, installs plugins, or touches business code. SQL is `SELECT`-only with enforced row limits and pre-execution row-count checks.
