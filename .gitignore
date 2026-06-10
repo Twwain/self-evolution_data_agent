@@ -6,6 +6,8 @@ __pycache__/
 .DS_Store
 data/
 .env
+.env.*
+!.env.example
 *.db
 node_modules/
 dist/

@@ -7,10 +7,12 @@ from sqlalchemy import select
 from app.knowledge.canonical_candidate import write_canonical_candidate
 from app.knowledge.candidate_cleanup import (
     archive_old_candidates,
+    cleanup_scos_for_datasource,
     orphan_candidates_for_datasource,
     orphan_candidates_for_repo,
 )
-from app.models import SchemaCanonicalAuditLog, SchemaCanonicalCandidate
+from app.knowledge.schema_canonical import upsert_schema_canonical
+from app.models import SchemaCanonicalAuditLog, SchemaCanonicalCandidate, SchemaCanonicalObject
 
 pytestmark = pytest.mark.asyncio
 
@@ -86,6 +88,63 @@ async def test_orphan_candidates_for_datasource(
         )
     )).scalar_one()
     assert row.status == "orphaned"
+
+
+async def test_cleanup_scos_for_datasource(
+    test_session, namespace_factory, datasource_factory,
+):
+    """删 ds → 该 (db_type, database) 的 SCO 被删除 (无其他 ds 共用时)."""
+    ns = await namespace_factory()
+    ds = await datasource_factory(ns_id=ns.id)
+
+    await upsert_schema_canonical(
+        test_session, namespace_id=ns.id, db_type=ds.db_type,
+        database=ds.database, target="t_order",
+    )
+    await test_session.commit()
+
+    deleted = await cleanup_scos_for_datasource(test_session, ds)
+    await test_session.commit()
+    assert deleted == 1
+
+    remaining = (await test_session.execute(
+        select(SchemaCanonicalObject).where(
+            SchemaCanonicalObject.namespace_id == ns.id,
+            SchemaCanonicalObject.database == ds.database,
+        )
+    )).scalars().all()
+    assert remaining == []
+
+
+async def test_cleanup_scos_keeps_shared_database(
+    test_session, namespace_factory, datasource_factory,
+):
+    """另一个 ds 共用相同 (db_type, database) → SCO 保留, 不误删."""
+    ns = await namespace_factory()
+    ds1 = await datasource_factory(ns_id=ns.id)
+    ds2 = await datasource_factory(ns_id=ns.id)
+    # 让 ds2 共用 ds1 的 (db_type, database)
+    ds2.db_type = ds1.db_type
+    ds2.database = ds1.database
+    await test_session.flush()
+
+    await upsert_schema_canonical(
+        test_session, namespace_id=ns.id, db_type=ds1.db_type,
+        database=ds1.database, target="t_order",
+    )
+    await test_session.commit()
+
+    deleted = await cleanup_scos_for_datasource(test_session, ds1)
+    await test_session.commit()
+    assert deleted == 0
+
+    remaining = (await test_session.execute(
+        select(SchemaCanonicalObject).where(
+            SchemaCanonicalObject.namespace_id == ns.id,
+            SchemaCanonicalObject.database == ds1.database,
+        )
+    )).scalars().all()
+    assert len(remaining) == 1
 
 
 async def test_orphan_skips_already_orphaned(

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import (
 
 from app.models import KnowledgeEntry, Namespace
 from app.models.base import Base
-from tests._db_schema_sync import reconcile_missing_columns
+from tests._db_schema_sync import prepare_test_schema
 
 TEST_DATABASE_URL = os.environ.get(
     "IS_TEST_DATABASE_URL",
@@ -40,9 +40,7 @@ async def async_session():
         cursor.execute("SET timezone = 'Asia/Shanghai'")
         cursor.close()
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(reconcile_missing_columns)
+    await prepare_test_schema(engine)
 
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     yield factory

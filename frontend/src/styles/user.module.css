@@ -1,0 +1,87 @@
+/* ════════════════════════════════════════════
+ *  UserManagePage — 左右分栏 (用户列表 + 详情表单)
+ * ════════════════════════════════════════════ */
+
+.container {
+  display: flex;
+  flex-direction: row;
+  gap: 16px;
+  height: calc(100vh - 100px);
+  overflow: hidden;
+}
+
+/* ── 左侧: 用户列表 ── */
+.nsList {
+  width: 240px;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 16px;
+  border-right: 1px solid #e0e7ff;
+  overflow-y: auto;
+}
+
+.nsCard {
+  background: white;
+  border: 1px solid #e0e7ff;
+  border-radius: 10px;
+  padding: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.nsCard:hover {
+  border-color: #93c5fd;
+}
+
+.nsCardActive {
+  composes: nsCard;
+  border: 1.5px solid #2563eb;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.08);
+}
+
+.nsCardName {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e3a5f;
+}
+
+.nsCardSlug {
+  font-size: 11px;
+  color: #64748b;
+}
+
+/* ── 右侧: 详情面板 ── */
+.detailPanel {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.detailHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.detailTitle {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1e3a5f;
+}
+
+.detailMeta {
+  font-size: 11px;
+  color: #93c5fd;
+}
+
+/* ── 空状态 ── */
+.empty {
+  flex: 1;
+  text-align: center;
+  padding: 40px;
+  color: #93c5fd;
+  font-size: 13px;
+}

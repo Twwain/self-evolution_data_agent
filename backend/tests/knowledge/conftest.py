@@ -24,7 +24,7 @@ from app.models.namespace import DataSource, Namespace
 from app.models.git_repo import GitRepo
 from app.models.knowledge_entry import KnowledgeEntry
 from app.models.terminology_conflict import TerminologyConflict
-from tests._db_schema_sync import reconcile_missing_columns
+from tests._db_schema_sync import prepare_test_schema
 
 TEST_DATABASE_URL = os.environ.get(
     "IS_TEST_DATABASE_URL",
@@ -42,9 +42,7 @@ async def _engine() -> AsyncGenerator[AsyncEngine, None]:
         cursor.execute("SET timezone = 'Asia/Shanghai'")
         cursor.close()
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(reconcile_missing_columns)
+    await prepare_test_schema(engine)
     yield engine
     await engine.dispose()
 

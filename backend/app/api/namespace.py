@@ -367,7 +367,8 @@ async def refresh_schema(
 
     try:
         from app.knowledge.schema_canonical import refresh_mysql_canonicals
-        count = await refresh_mysql_canonicals(db, ns_id, ns.slug)
+        count = await refresh_mysql_canonicals(db, ns_id, ns.slug, datasource_id=ds_id)
+        await db.commit()
         return SchemaRefreshResult(
             success=True,
             table_count=count,
@@ -390,8 +391,13 @@ async def delete_datasource(
     if not ds or ds.namespace_id != ns_id:
         raise HTTPException(404, "数据源不存在")
     # orphan hook: 在 CASCADE 删除前标记关联 candidate 为 orphaned
-    from app.knowledge.candidate_cleanup import orphan_candidates_for_datasource
+    from app.knowledge.candidate_cleanup import (
+        cleanup_scos_for_datasource,
+        orphan_candidates_for_datasource,
+    )
     await orphan_candidates_for_datasource(db, ds_id)
+    # 清理 promote 后的 SCO 真相源 (SCO 无 datasource_id, 不随外键级联删除)
+    await cleanup_scos_for_datasource(db, ds)
     await db.delete(ds)
     await db.commit()
 

@@ -158,4 +158,5 @@ async def refresh_canonicals(
         raise HTTPException(404, "namespace not found")
 
     count = await refresh_mysql_canonicals(db, ns_id, ns.slug)
+    await db.commit()
     return {"refreshed": count, "namespace_id": ns_id}

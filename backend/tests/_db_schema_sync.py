@@ -12,8 +12,30 @@ from __future__ import annotations
 
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.models.base import Base
+
+
+async def prepare_test_schema(engine: AsyncEngine) -> None:
+    """测试库 schema 准备单点收口 — create_all + 列对齐 + 生产 migrations.
+
+    三步缺一不可:
+    1. create_all: 建缺失的表
+    2. reconcile_missing_columns: 给旧表补缺列
+    3. schema_migrations.run_all: 跑生产同款迁移 (含索引重建等 create_all 覆盖不到的
+       DDL, 如 migration_018 的 partial unique 索引修复)。否则测试库索引/约束会与
+       生产漂移 (实证: uq_one_open_conflict_per_field 在测试库被建成全表 unique,
+       resolved 行占位阻挡同字段重开 conflict, 致 promote 撞 UniqueViolation)。
+
+    所有 conftest 的 engine fixture 必须调用本函数, 而非各自手写前两步, 防漂移。
+    """
+    from app.db.schema_migrations import run_all
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(reconcile_missing_columns)
+    await run_all(engine)
 
 
 def reconcile_missing_columns(sync_conn) -> None:

@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.models import DataSource, GitRepo, Namespace
 from app.models.base import Base
 from app.models.knowledge_entry import KnowledgeEntry
-from tests._db_schema_sync import reconcile_missing_columns
+from tests._db_schema_sync import prepare_test_schema
 
 TEST_DATABASE_URL = os.environ.get(
     "IS_TEST_DATABASE_URL",
@@ -54,9 +54,7 @@ async def async_session(monkeypatch):
         cursor.execute("SET timezone = 'Asia/Shanghai'")
         cursor.close()
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(reconcile_missing_columns)
+    await prepare_test_schema(engine)
 
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     # ── 让生产 async_session sessionmaker 指向测试 engine ──────
@@ -172,18 +170,29 @@ async def test_engine() -> AsyncEngine:
         cursor.execute("SET timezone = 'Asia/Shanghai'")
         cursor.close()
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(reconcile_missing_columns)
+    await prepare_test_schema(engine)
     yield engine  # type: ignore[misc]
     await engine.dispose()
 
 
 @pytest_asyncio.fixture
 async def test_session(test_engine: AsyncEngine) -> AsyncSession:
-    Session = async_sessionmaker(test_engine, expire_on_commit=False)
-    async with Session() as session:
+    """事务回滚隔离 — 测试内 commit() / begin_nested() 仅落到 SAVEPOINT, 结束 rollback, 零残留.
+
+    用 SQLAlchemy 2.0 的 join_transaction_mode="create_savepoint": session 绑定到
+    已开启外层事务的连接, 其后所有 commit()/begin_nested() 自动在 SAVEPOINT 层面操作,
+    与业务代码自用的 begin_nested() 兼容。测试结束统一 rollback, 不向远程库提交数据。
+    """
+    async with test_engine.connect() as conn:
+        trans = await conn.begin()
+        session = AsyncSession(
+            bind=conn,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
         yield session  # type: ignore[misc]
+        await session.close()
+        await trans.rollback()
 
 
 @pytest_asyncio.fixture

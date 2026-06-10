@@ -58,6 +58,10 @@ async def write_introspect_candidates_for_target(
     # 字段级 description
     for f in detail.get("fields", []):
         candidate_value: dict = {"description": f.get("description", "")}
+        if f.get("type"):
+            candidate_value["type"] = f.get("type")
+        if f.get("nullable") is not None:
+            candidate_value["nullable"] = f.get("nullable")
         if f.get("indexed"):
             candidate_value["indexed"] = True
         await write_canonical_candidate(

@@ -19,7 +19,7 @@ import {
 import { PlusOutlined, UserOutlined } from "@ant-design/icons";
 import * as api from "@/api";
 import type { Namespace, User } from "@/types";
-import styles from "@/styles/namespace.module.css";
+import styles from "@/styles/user.module.css";
 import globalStyles from "@/styles/global.module.css";
 
 const UserManagePage: React.FC = () => {

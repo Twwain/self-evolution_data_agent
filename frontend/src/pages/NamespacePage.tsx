@@ -268,7 +268,7 @@ const NamespacePage: React.FC = () => {
             label="标识 (英文)"
             rules={[{ required: true, pattern: /^[a-z0-9_-]+$/ }]}
           >
-            <Input placeholder="如: content-platform" />
+            <Input placeholder="如: my-namespace" />
           </Form.Item>
           <Form.Item name="description" label="描述">
             <Input.TextArea rows={2} />

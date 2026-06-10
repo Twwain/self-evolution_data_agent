@@ -90,6 +90,16 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
     }
   };
 
+  // 仅刷新各 Tab 计数 (不重载列表 / 不打扰当前选中 SCO)
+  const refreshCounts = async () => {
+    try {
+      const c = await schemaCanonicalApi.getPendingCounts(namespaceId);
+      setCounts(c);
+    } catch {
+      // 计数刷新失败不阻塞主流程
+    }
+  };
+
   useEffect(() => {
     if (namespaceId) void load();
   }, [namespaceId, dbType]);
@@ -261,7 +271,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
           冲突 <Badge count={counts?.conflicts ?? 0} style={{ marginLeft: 4 }} />
         </span>
       ),
-      children: <ConflictsTab namespaceId={namespaceId} />,
+      children: <ConflictsTab namespaceId={namespaceId} onResolved={refreshCounts} />,
     },
     {
       key: "audit",

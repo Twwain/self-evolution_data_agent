@@ -4,14 +4,20 @@ conftest — 共享 fixture：PostgreSQL 测试数据库、模型表
 
 import asyncio
 import os
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from dotenv import load_dotenv
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.models.base import Base
-from tests._db_schema_sync import reconcile_missing_columns
+from tests._db_schema_sync import prepare_test_schema
+
+# 从 backend/.env.test 加载测试配置 (含 IS_TEST_DATABASE_URL)。
+# 独立于应用 .env: pydantic Settings 只读 .env, 不读 .env.test, 避免 IS_ 前缀冲突。
+# override=False: CI 经 workflow env 注入的值优先, 不被 .env.test 覆盖。
+load_dotenv(Path(__file__).resolve().parents[1] / ".env.test")
 
 # 测试数据库 URL — 从环境变量读取，默认使用远程测试 RDS
 TEST_DATABASE_URL = os.environ.get(
@@ -40,10 +46,8 @@ async def _engine():
         cursor.execute("SET timezone = 'Asia/Shanghai'")
         cursor.close()
 
-    # 建表（幂等）+ 列级 schema 对齐 (旧表补缺列, 见 _db_schema_sync)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(reconcile_missing_columns)
+    # 建表 + 列对齐 + 生产 migrations (单点收口, 见 _db_schema_sync.prepare_test_schema)
+    await prepare_test_schema(engine)
 
     yield engine
     await engine.dispose()

@@ -9,7 +9,7 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from app.models.base import Base
-from tests._db_schema_sync import reconcile_missing_columns
+from tests._db_schema_sync import prepare_test_schema
 
 TEST_DATABASE_URL = os.environ.get(
     "IS_TEST_DATABASE_URL",
@@ -27,9 +27,7 @@ async def _engine() -> AsyncGenerator[AsyncEngine, None]:
         cursor.execute("SET timezone = 'Asia/Shanghai'")
         cursor.close()
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(reconcile_missing_columns)
+    await prepare_test_schema(engine)
     yield engine
     await engine.dispose()
 

@@ -150,20 +150,21 @@ class MySQLDriver:
                     idx_map[name]["columns"].append(row["COLUMN_NAME"])
                 indexes = list(idx_map.values())
 
-                # 行数估算
+                # 行数估算 + 表注释
                 await cur.execute(
-                    "SELECT TABLE_ROWS FROM INFORMATION_SCHEMA.TABLES "
+                    "SELECT TABLE_ROWS, TABLE_COMMENT FROM INFORMATION_SCHEMA.TABLES "
                     "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s",
                     (ds.database, target),
                 )
                 row = await cur.fetchone()
                 sample_count = (row or {}).get("TABLE_ROWS") or 0
+                table_comment = (row or {}).get("TABLE_COMMENT") or ""
 
                 return SchemaSnapshot(
                     db_type="mysql",
                     database=ds.database,
                     target=target,
-                    description="",
+                    description=table_comment,
                     fields=fields,
                     indexes=indexes,
                     sample_count=sample_count,

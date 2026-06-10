@@ -108,6 +108,7 @@ async def refresh_mysql_canonicals(
     referenced_tables: set[str] | None = None,
     repo_name: str = "",
     trigger_promote: bool = True,
+    datasource_id: int | None = None,
 ) -> int:
     """从 MySQLDriver introspect 写入 candidate 层 (不再直写 SchemaCanonicalObject).
 
@@ -115,6 +116,8 @@ async def refresh_mysql_canonicals(
         referenced_tables: 仅 introspect 集合内的表名 (per-repo 范围收窄).
             None → 全表 introspect (手动按钮路径保留旧语义).
             空 set → 早返 0 (本 repo 无 mysql 引用, noop).
+        datasource_id: 仅刷新指定数据源 (per-row 按钮路径收窄).
+            None → namespace 下全部 MySQL 数据源 (trainer / ns 级端点旧语义).
         trigger_promote: 写完 candidate 后是否内部触发 promote + 索引补充.
             True (默认, 手动刷新端点用) → 自给自足汇聚, 因端点无后续汇聚步骤.
             False (trainer step 6.4 用) → 只写候选, 汇聚交给 step 6.5 的
@@ -133,12 +136,13 @@ async def refresh_mysql_canonicals(
     if referenced_tables is not None and not referenced_tables:
         return 0
 
-    ds_rows = (await db.execute(
-        sa_select(DataSource).where(
-            DataSource.namespace_id == namespace_id,
-            DataSource.db_type == "mysql",
-        )
-    )).scalars().all()
+    ds_stmt = sa_select(DataSource).where(
+        DataSource.namespace_id == namespace_id,
+        DataSource.db_type == "mysql",
+    )
+    if datasource_id is not None:
+        ds_stmt = ds_stmt.where(DataSource.id == datasource_id)
+    ds_rows = (await db.execute(ds_stmt)).scalars().all()
 
     if not ds_rows:
         return 0
@@ -181,7 +185,11 @@ async def refresh_mysql_canonicals(
     if table_count > 0 and trigger_promote:
         await promote_candidates_to_canonical(db, namespace_id)
         # promote 后补充索引信息 (indexes_json + field indexed)
-        await backfill_indexes_from_driver(db, namespace_id, db_type="mysql")
+        # datasource_id 收窄时只补该数据源的 database, 不碰其他数据源
+        backfill_database = ds_rows[0].database if datasource_id is not None else None
+        await backfill_indexes_from_driver(
+            db, namespace_id, db_type="mysql", database=backfill_database,
+        )
 
     log.info(
         "[%s] refreshed %d MySQL tables (via candidate) for ns=%d",
@@ -194,6 +202,7 @@ async def backfill_indexes_from_driver(
     db: AsyncSession,
     namespace_id: int,
     db_type: str | None = None,
+    database: str | None = None,
 ) -> int:
     """从 driver introspect 补充 SCO 的 indexes_json + field 级 indexed 标记.
 
@@ -202,6 +211,7 @@ async def backfill_indexes_from_driver(
 
     Args:
         db_type: 可选, 仅处理指定 db_type 的 SCO. None → 全部.
+        database: 可选, 仅处理指定 database 的 SCO (per-datasource 收窄). None → 全部.
 
     Returns:
         更新的 SCO 数量.
@@ -212,6 +222,8 @@ async def backfill_indexes_from_driver(
     from app.models import DataSource
 
     scos = await list_schema_canonicals(db, namespace_id, db_type=db_type)
+    if database is not None:
+        scos = [s for s in scos if s.database == database]
     if not scos:
         return 0
 

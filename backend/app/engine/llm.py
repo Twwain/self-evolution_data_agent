@@ -171,18 +171,23 @@ def chat_completion(
     temperature: float = 0.1,
     max_tokens: int = 12288,  # noqa: hardcode
     provider: str | None = None,
+    extra_body: dict | None = None,
 ) -> str:
     """
     统一聊天补全接口
     messages 格式统一用 OpenAI 风格: [{"role": "system|user|assistant", "content": "..."}]
     内部自动适配不同 provider 的 API 差异
     本函数被 @observe 包装, 自动落 generation 观测 (无 trace 时变 no-op)
+
+    extra_body: OpenAI 兼容端点的厂商扩展参数 (如 DeepSeek 的
+        {"thinking": {"type": "disabled"}} 关闭思考模式). 仅 openai 路径透传,
+        anthropic 路径忽略 (Claude 思考默认关闭, 由 thinking 参数单独控制).
     """
     provider = provider or settings.llm_provider
 
     if provider == "anthropic":
         return _claude_chat_with_retry(messages, temperature, max_tokens)
-    return _openai_chat_with_retry(messages, temperature, max_tokens)
+    return _openai_chat_with_retry(messages, temperature, max_tokens, extra_body=extra_body)
 
 
 # ════════════════════════════════════════════
@@ -190,13 +195,15 @@ def chat_completion(
 #  (DashScope / DeepSeek / vLLM / 官方 OpenAI 等任意兼容端点)
 # ════════════════════════════════════════════
 
-def _openai_chat(messages: list[dict], temperature: float, max_tokens: int) -> str:
+def _openai_chat(messages: list[dict], temperature: float, max_tokens: int,
+                 extra_body: dict | None = None) -> str:
     client = _get_openai_client()
     resp = client.chat.completions.create(
         model=settings.llm_model,
         messages=messages,  # type: ignore[arg-type]
         temperature=temperature,
         max_tokens=max_tokens,
+        extra_body=extra_body,
     )
     text = resp.choices[0].message.content or ""
     usage = getattr(resp, "usage", None)
@@ -219,12 +226,13 @@ def _openai_chat(messages: list[dict], temperature: float, max_tokens: int) -> s
     return text
 
 
-def _openai_chat_with_retry(messages: list[dict], temperature: float, max_tokens: int) -> str:
+def _openai_chat_with_retry(messages: list[dict], temperature: float, max_tokens: int,
+                            extra_body: dict | None = None) -> str:
     """OpenAI-compatible chat + transient-error retry (指数退避, 上限 llm_retry_max)."""
     last_exc: BaseException | None = None
     for attempt in range(settings.llm_retry_max + 1):
         try:
-            return _openai_chat(messages, temperature, max_tokens)
+            return _openai_chat(messages, temperature, max_tokens, extra_body=extra_body)
         except Exception as e:
             if not _is_transient_llm_error(e) or attempt == settings.llm_retry_max:
                 raise
@@ -567,6 +575,39 @@ async def chat_completion_with_tools(
 
 # ── OpenAI-compatible (Chat Completions function calling) ──
 
+def _to_openai_messages(messages: list[dict]) -> list[dict]:
+    """把中性消息格式适配为 OpenAI Chat Completions 线格式.
+
+    中性 assistant 消息 (agent_loop 产出):
+        {"role": "assistant", "content": str, "tool_calls": [{"id", "name", "input"}]}
+    OpenAI 线格式要求每个 tool_call 为:
+        {"id", "type": "function", "function": {"name", "arguments": "<json str>"}}
+
+    system / user / tool 消息本就符合 OpenAI, 原样透传.
+    """
+    converted: list[dict] = []
+    for m in messages:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            converted.append({
+                "role": "assistant",
+                "content": m.get("content") or "",
+                "tool_calls": [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc["input"], ensure_ascii=False),
+                        },
+                    }
+                    for tc in m["tool_calls"]
+                ],
+            })
+        else:
+            converted.append(m)
+    return converted
+
+
 def _openai_tool_use(
     messages: list[dict], tools: list[dict],
     temperature: float, max_tokens: int,
@@ -585,7 +626,7 @@ def _openai_tool_use(
     ]
     resp = client.chat.completions.create(
         model=settings.llm_model,
-        messages=messages,  # type: ignore[arg-type]
+        messages=_to_openai_messages(messages),  # type: ignore[arg-type]
         tools=openai_tools,  # type: ignore[arg-type]
         temperature=temperature,
         max_tokens=max_tokens,

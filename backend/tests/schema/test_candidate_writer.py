@@ -10,8 +10,9 @@ from app.models import SchemaCanonicalAuditLog, SchemaCanonicalCandidate
 pytestmark = pytest.mark.asyncio
 
 
-async def test_first_write_creates_candidate(test_session, namespace_factory):
+async def test_first_write_creates_candidate(test_session, namespace_factory, datasource_factory):
     ns = await namespace_factory()
+    ds = await datasource_factory(ns_id=ns.id)
     cand_id = await write_canonical_candidate(
         test_session,
         namespace_id=ns.id,
@@ -21,10 +22,10 @@ async def test_first_write_creates_candidate(test_session, namespace_factory):
         field_path="status",
         candidate_kind="field_description",
         candidate_value={"description": "订单状态"},
-        evidence_sources=[{"source": "introspect", "datasource_id": 1}],
+        evidence_sources=[{"source": "introspect", "datasource_id": ds.id}],
         confidence_status="confirmed_by_introspect",
         repo_id=None,
-        datasource_id=1,
+        datasource_id=ds.id,
     )
     await test_session.commit()
 
@@ -46,8 +47,10 @@ async def test_first_write_creates_candidate(test_session, namespace_factory):
     assert len(audit_rows) == 1
 
 
-async def test_second_write_same_value_dedups_and_merges_evidence(test_session, namespace_factory):
+async def test_second_write_same_value_dedups_and_merges_evidence(test_session, namespace_factory, datasource_factory, repo_factory):
     ns = await namespace_factory()
+    ds = await datasource_factory(ns_id=ns.id)
+    repo = await repo_factory(ns_id=ns.id)
     # 第一次 introspect 来源
     id1 = await write_canonical_candidate(
         test_session,
@@ -58,10 +61,10 @@ async def test_second_write_same_value_dedups_and_merges_evidence(test_session, 
         field_path="status",
         candidate_kind="field_description",
         candidate_value={"description": "订单状态"},
-        evidence_sources=[{"source": "introspect", "datasource_id": 1}],
+        evidence_sources=[{"source": "introspect", "datasource_id": ds.id}],
         confidence_status="confirmed_by_introspect",
         repo_id=None,
-        datasource_id=1,
+        datasource_id=ds.id,
     )
     await test_session.commit()
 
@@ -75,9 +78,9 @@ async def test_second_write_same_value_dedups_and_merges_evidence(test_session, 
         field_path="status",
         candidate_kind="field_description",
         candidate_value={"description": "订单状态"},
-        evidence_sources=[{"source": "code_jpa_javadoc", "repo_id": 7, "file": "OrderEntity.java"}],
+        evidence_sources=[{"source": "code_jpa_javadoc", "repo_id": repo.id, "file": "OrderEntity.java"}],
         confidence_status="confirmed_by_code",
-        repo_id=7,
+        repo_id=repo.id,
         datasource_id=None,
     )
     await test_session.commit()

@@ -5,7 +5,13 @@ import { schemaCanonicalApi } from "@/api";
 import type { SchemaConflict } from "@/types/schema-canonical";
 import { ConflictResolver, type ResolveBody } from "./ConflictResolver";
 
-export function ConflictsTab({ namespaceId }: { namespaceId: number }) {
+export function ConflictsTab({
+  namespaceId,
+  onResolved,
+}: {
+  namespaceId: number;
+  onResolved?: () => void;
+}) {
   const [conflicts, setConflicts] = useState<SchemaConflict[]>([]);
 
   const refresh = async () => setConflicts(await schemaCanonicalApi.listConflicts(namespaceId, "open"));
@@ -16,10 +22,12 @@ export function ConflictsTab({ namespaceId }: { namespaceId: number }) {
       await schemaCanonicalApi.resolveConflict(namespaceId, cid, body);
       message.success("已解决");
       await refresh();
+      onResolved?.();
     } catch (err: any) {
       if (err?.response?.status === 409) {
         message.warning("该冲突已被其他人解决，正在刷新...");
         await refresh();
+        onResolved?.();
       } else {
         message.error("解决冲突失败");
       }
