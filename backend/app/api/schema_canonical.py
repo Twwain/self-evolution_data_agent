@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_ns_manage
+from app.auth import require_admin_or_above, require_ns_manage
 from app.db.metadata import get_db
 from app.knowledge.schema_canonical import (
     get_schema_canonical,
@@ -143,6 +143,99 @@ async def patch_canonical(
     await db.commit()
     await db.refresh(obj)
     return SchemaCanonicalOut.from_orm(obj)
+
+
+@router.delete("/{sco_id}")
+async def delete_canonical(
+    ns_id: int,
+    sco_id: int,
+    user: User = Depends(require_admin_or_above),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """删除单条 schema canonical 对象.
+
+    同事务处理:
+    - 写 audit_log (含 before 全字段快照)
+    - 回退关联 candidate 状态 active→pending
+    - 关闭关联 open conflict → resolved
+    - 清理悬空 enum_binding_conflicts
+    - 物理删除 SCO 行
+    """
+    from app.knowledge.canonical_audit import write_canonical_audit_log
+    from app.models.schema_canonical_candidate import SchemaCanonicalCandidate
+
+    obj = await db.get(SchemaCanonicalObject, sco_id)
+    if not obj or obj.namespace_id != ns_id:
+        raise HTTPException(404, "schema canonical not found")
+
+    target_info = f"[{obj.db_type}] {obj.database}/{obj.target}"
+
+    # 快照全字段 (FK ondelete=SET NULL, commit 后 canonical_id 丢失)
+    before = {
+        "id": obj.id,
+        "namespace_id": obj.namespace_id,
+        "db_type": obj.db_type,
+        "database": obj.database,
+        "target": obj.target,
+        "fields_json": obj.fields_json,
+        "indexes_json": obj.indexes_json,
+        "description": obj.description,
+        "purpose_detail": obj.purpose_detail,
+        "reviewed": obj.reviewed,
+        "sample_count": obj.sample_count,
+        "source": obj.source,
+        "relationships_json": obj.relationships_json,
+        "sample_values_json": obj.sample_values_json,
+        "user_locked": obj.user_locked,
+        "created_at": obj.created_at.isoformat() if obj.created_at else None,
+        "updated_at": obj.updated_at.isoformat() if obj.updated_at else None,
+    }
+    await write_canonical_audit_log(
+        db, namespace_id=ns_id, action="canonical_deleted",
+        canonical_id=sco_id, actor_id=user.id,
+        before=before, reason=f"manual delete: {target_info}",
+    )
+
+    # 回退关联 candidate 状态 (防止 active 孤儿)
+    from sqlalchemy import delete as sa_delete, update as sa_update
+    await db.execute(
+        sa_update(SchemaCanonicalCandidate)
+        .where(
+            SchemaCanonicalCandidate.namespace_id == ns_id,
+            SchemaCanonicalCandidate.db_type == obj.db_type,
+            SchemaCanonicalCandidate.database == obj.database,
+            SchemaCanonicalCandidate.target == obj.target,
+            SchemaCanonicalCandidate.status == "active",
+        )
+        .values(status="pending")
+    )
+
+    # 清理悬空 enum_binding_conflicts (field_canonical_id 无 FK)
+    from app.models.enum_binding_conflict import EnumBindingConflict
+    await db.execute(
+        sa_delete(EnumBindingConflict).where(
+            EnumBindingConflict.namespace_id == ns_id,
+            EnumBindingConflict.field_canonical_id == sco_id,
+        )
+    )
+
+    # 关闭关联的 open conflict (无 FK, 按元组关联)
+    from app.models.schema_canonical_conflict import SchemaCanonicalConflict
+    await db.execute(
+        sa_update(SchemaCanonicalConflict)
+        .where(
+            SchemaCanonicalConflict.namespace_id == ns_id,
+            SchemaCanonicalConflict.db_type == obj.db_type,
+            SchemaCanonicalConflict.database == obj.database,
+            SchemaCanonicalConflict.target == obj.target,
+            SchemaCanonicalConflict.status == "open",
+        )
+        .values(status="resolved", resolved_by=user.id, resolution_reason="table deleted")
+    )
+
+    await db.delete(obj)
+    await db.commit()
+    return {"ok": True, "deleted_id": sco_id}
 
 
 @router.post("/refresh")

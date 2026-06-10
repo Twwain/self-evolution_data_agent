@@ -1,4 +1,4 @@
-import { Button, Input, message, Modal, Space, Table, Tag } from "antd";
+import { Button, Input, message, Modal, Popconfirm, Space, Table, Tag } from "antd";
 import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { useState } from "react";
@@ -279,6 +279,8 @@ export function AllFieldsTab(props: {
   onLockField: (fieldName: string, locked: boolean) => void;
   onSave?: (payload: { description?: string; purpose_detail?: string; fields?: SchemaCanonicalField[] }) => Promise<void>;
   onRefresh?: () => void;
+  onDelete?: () => void;
+  tableLabel?: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [editFields, setEditFields] = useState<EditableField[]>([]);
@@ -587,7 +589,22 @@ export function AllFieldsTab(props: {
       )}
 
       {/* Action buttons */}
-      <div style={{ marginBottom: 8, display: "flex", justifyContent: "flex-end" }}>
+      <div style={{ marginBottom: 8, display: "flex", justifyContent: "space-between" }}>
+        <Space>
+          {editing && props.onDelete && (
+            <Popconfirm
+              title={`确定删除 ${props.tableLabel || '此表/集合'} 吗？此操作不可恢复。`}
+              onConfirm={props.onDelete}
+              okText="删除"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+            >
+              <Button size="small" danger icon={<DeleteOutlined />}>
+                删除此表
+              </Button>
+            </Popconfirm>
+          )}
+        </Space>
         <Space>
           {editing ? (
             <>

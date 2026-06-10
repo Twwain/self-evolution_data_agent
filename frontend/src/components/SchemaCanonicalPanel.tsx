@@ -142,6 +142,19 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
     }
   };
 
+  const handleDeleteSco = async () => {
+    if (!selectedSco || !namespaceId) return;
+    try {
+      await schemaCanonicalApi.deleteCanonical(namespaceId, selectedSco.id);
+      message.success("已删除");
+      selectedIdRef.current = null;
+      void load();
+    } catch (e) {
+      console.error("delete canonical failed", e);
+      message.error("删除失败");
+    }
+  };
+
   const handleLockField = async (fieldName: string, locked: boolean) => {
     if (!selectedSco) return;
     try {
@@ -222,6 +235,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
           />
           {selectedSco && (
             <AllFieldsTab
+              key={selectedSco.id}
               sco={selectedSco}
               namespaceId={namespaceId}
               onOpenEvidence={handleOpenEvidence}
@@ -229,6 +243,8 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
               onLockField={handleLockField}
               onSave={handleSave}
               onRefresh={load}
+              onDelete={handleDeleteSco}
+              tableLabel={`[${selectedSco.db_type}] ${selectedSco.database}/${selectedSco.target}`}
             />
           )}
         </Space>
