@@ -92,9 +92,10 @@ async def test_save_knowledge_tool_rule_unchanged(
 async def test_terminology_refresher_via_gate(
     async_session, seeded_ns_with_mongo_ds, monkeypatch,
 ):
-    """Phase 1c: terminology_refresher._upsert_terminology_ke 改调闸门后,
-    INVALID 的 ExtractedTerm 应被拒, VALID 应入库 source=git."""
-    ns_id, repo_id = seeded_ns_with_mongo_ds
+    """terminology-schema-attribution: _upsert_terminology_ke 改 ns 级签名
+    (db, ns_id, t) 去 repo_id 后, INVALID 的 ExtractedTerm 应被拒,
+    VALID 应入库 source=schema 且 repo_id IS NULL."""
+    ns_id, _repo_id = seeded_ns_with_mongo_ds
 
     # 把生产 async_session 指向测试会话, 让 _upsert_terminology_ke 内调的
     # `from app.db.metadata import async_session` 用同一份测试 SQLite.
@@ -103,7 +104,7 @@ async def test_terminology_refresher_via_gate(
     from app.knowledge.terminology_extractor import ExtractedTerm
     from app.knowledge.terminology_refresher import _upsert_terminology_ke
 
-    # VALID: 经闸门后入库
+    # VALID: 经闸门后入库 (新签名: 去 repo_id 形参)
     valid_term = ExtractedTerm(
         term="商品",
         synonyms=["货品"],
@@ -112,7 +113,7 @@ async def test_terminology_refresher_via_gate(
         db_type="mongodb",
         source_collections=["c_category"],
     )
-    status_v = await _upsert_terminology_ke(ns_id, repo_id, valid_term)
+    status_v = await _upsert_terminology_ke(ns_id, valid_term)
     assert status_v == "inserted"
 
     # INVALID: term 含分号 → 闸门拒, 返 'failed' or 'skipped'
@@ -124,11 +125,17 @@ async def test_terminology_refresher_via_gate(
         db_type="mongodb",
         source_collections=["c_category"],
     )
-    status_i = await _upsert_terminology_ke(ns_id, repo_id, bad_term)
+    status_i = await _upsert_terminology_ke(ns_id, bad_term)
     assert status_i in ("failed", "skipped")
 
     async with async_session() as db:
-        rows = (await db.execute(select(KnowledgeEntry))).scalars().all()
+        rows = (await db.execute(
+            select(KnowledgeEntry).where(KnowledgeEntry.namespace_id == ns_id)
+        )).scalars().all()
     terms = [json.loads(r.payload).get("term") for r in rows]
     assert "商品" in terms
     assert "字段枚举值: 0=draft; 1=published" not in terms
+    # 术语只归属 schema/namespace: source=schema, repo_id IS NULL
+    written = [r for r in rows if json.loads(r.payload).get("term") == "商品"]
+    assert written and all(r.source == "schema" for r in written)
+    assert all(r.repo_id is None for r in written)

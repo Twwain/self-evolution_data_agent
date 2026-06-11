@@ -104,11 +104,11 @@ async def test_empty_canonical_skips_with_friendly_message(
     # ── refresh 探针: 模拟空 canonical 场景 ──
     seen_args: list[tuple[Any, ...]] = []
 
-    async def _empty_canonical_refresh(db, ns_id_arg, repo_id_arg):
-        seen_args.append((ns_id_arg, repo_id_arg))
+    async def _empty_canonical_refresh(db, ns_id_arg):
+        seen_args.append((ns_id_arg,))
         return RefreshReport(skipped=True, reason="no_canonicals")
 
-    monkeypatch.setattr(term_stage_module, "refresh_terms_for_repo", _empty_canonical_refresh)
+    monkeypatch.setattr(term_stage_module, "refresh_namespace_terminology", _empty_canonical_refresh)
 
     events: list[tuple[int, str]] = []
 
@@ -125,7 +125,7 @@ async def test_empty_canonical_skips_with_friendly_message(
     )
 
     assert isinstance(report, ParseReport)
-    assert seen_args == [(ns_id, repo_id)], "refresh_terms_for_repo 应被调一次"
+    assert seen_args == [(ns_id,)], "refresh_namespace_terminology 应被调一次"
 
     # ── 末态 (100, "完成") 保留 ──
     assert events[-1] == (100, "完成"), f"末态错误: {events[-1]}"

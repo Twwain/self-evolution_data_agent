@@ -105,15 +105,15 @@ async def test_terminology_stage_calls_refresh_and_updates_progress(
     # ── refresh 探针: 记录入参 + 返伪 RefreshReport ──
     seen_args: list[tuple[Any, ...]] = []
 
-    async def _probe_refresh(db, ns_id_arg, repo_id_arg):
-        seen_args.append((ns_id_arg, repo_id_arg))
+    async def _probe_refresh(db, ns_id_arg):
+        seen_args.append((ns_id_arg,))
         return RefreshReport(
             canonicals_seen=3,
             merged=["alpha", "beta"],
             failed=[],
         )
 
-    monkeypatch.setattr(term_stage_module, "refresh_terms_for_repo", _probe_refresh)
+    monkeypatch.setattr(term_stage_module, "refresh_namespace_terminology", _probe_refresh)
 
     events: list[tuple[int, str]] = []
 
@@ -130,7 +130,7 @@ async def test_terminology_stage_calls_refresh_and_updates_progress(
     )
 
     assert isinstance(report, ParseReport)
-    assert seen_args == [(ns_id, repo_id)], "refresh_terms_for_repo 应被调一次且入参对齐"
+    assert seen_args == [(ns_id,)], "refresh_namespace_terminology 应被调一次且入参对齐"
 
     term_events = [(p, m) for p, m in events if 96 <= p <= 99]
     assert term_events, f"未发现 96-99% 区间的 terminology 事件: {events}"
@@ -168,7 +168,7 @@ async def test_terminology_worker_registered_and_unregistered(
     saw_registered = asyncio.Event()
     can_finish = asyncio.Event()
 
-    async def _slow_refresh(db, ns_id_arg, repo_id_arg):
+    async def _slow_refresh(db, ns_id_arg):
         # 进入 refresh 时, key 必须已在注册表
         assert worker_key in worker_module._active_workers, \
             f"refresh 进入时 {worker_key} 应已注册, 实测 {list(worker_module._active_workers.keys())}"
@@ -176,7 +176,7 @@ async def test_terminology_worker_registered_and_unregistered(
         await can_finish.wait()
         return RefreshReport(canonicals_seen=1, merged=["x"])
 
-    monkeypatch.setattr(term_stage_module, "refresh_terms_for_repo", _slow_refresh)
+    monkeypatch.setattr(term_stage_module, "refresh_namespace_terminology", _slow_refresh)
 
     async def on_progress(percent: int, message: str) -> None:
         return None
@@ -225,11 +225,11 @@ async def test_terminology_timeout_marks_failed_status(
         "app.config.settings.terminology_refresh_timeout_secs", 0.01
     )
 
-    async def _hang_refresh(db, ns_id_arg, repo_id_arg):
+    async def _hang_refresh(db, ns_id_arg):
         await asyncio.sleep(2)  # 远超 timeout
         return RefreshReport()  # pragma: no cover - 永不到达
 
-    monkeypatch.setattr(term_stage_module, "refresh_terms_for_repo", _hang_refresh)
+    monkeypatch.setattr(term_stage_module, "refresh_namespace_terminology", _hang_refresh)
 
     events: list[tuple[int, str]] = []
 

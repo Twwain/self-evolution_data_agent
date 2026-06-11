@@ -267,7 +267,7 @@ async def run_training_pipeline_with_progress(
     await on_progress(56, "写入 schema 候选...")
     from app.knowledge.extraction_writer import write_canonical_candidates_from_parse
 
-    # 构建 collection/table → database 反查表 (实时连接 DataSource, 同时刷新 snapshot)
+    # 构建 collection/table → database 反查表 (实时连接 DataSource)
     coll_to_db: dict[str, str] = {}
     async with async_session() as ds_db:
         ds_rows = list((await ds_db.execute(
@@ -287,11 +287,6 @@ async def run_training_pipeline_with_progress(
                     )
                     colls = sorted(client[ds.database].list_collection_names())
                     client.close()
-                    new_snap = json.dumps({"collections": colls})
-                    if ds.schema_snapshot_json != new_snap:
-                        ds.schema_snapshot_json = new_snap
-                        log.info("[%s] MongoDB snapshot 刷新 ds_id=%d collections=%d",
-                                 name, ds.id, len(colls))
                     for coll in colls:
                         if coll not in coll_to_db:
                             coll_to_db[coll] = ds.database
@@ -306,27 +301,12 @@ async def run_training_pipeline_with_progress(
                         cur.execute("SHOW TABLES")
                         tables = sorted(row[0] for row in cur.fetchall())
                     conn.close()
-                    new_snap = json.dumps({"tables": tables})
-                    if ds.schema_snapshot_json != new_snap:
-                        ds.schema_snapshot_json = new_snap
-                        log.info("[%s] MySQL snapshot 刷新 ds_id=%d tables=%d",
-                                 name, ds.id, len(tables))
                     for tbl in tables:
                         if tbl not in coll_to_db:
                             coll_to_db[tbl] = ds.database
             except Exception as e:
-                log.warning("[%s] snapshot 刷新失败 ds_id=%d db_type=%s: %s",
+                log.warning("[%s] collection→db 反查连接失败 ds_id=%d db_type=%s: %s",
                             name, ds.id, ds.db_type, e)
-                # fallback: 读旧 snapshot
-                if ds.schema_snapshot_json:
-                    try:
-                        snap = json.loads(ds.schema_snapshot_json)
-                        names = snap.get("collections", snap.get("tables", []))
-                        for n in names:
-                            if n not in coll_to_db:
-                                coll_to_db[n] = ds.database
-                    except Exception:
-                        pass
         await ds_db.commit()
     if coll_to_db:
         log.info("[%s] collection→db 反查表 %d 条", name, len(coll_to_db))

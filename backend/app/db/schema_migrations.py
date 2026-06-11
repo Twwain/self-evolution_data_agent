@@ -409,6 +409,13 @@ async def run_all(engine: AsyncEngine) -> None:
     # unique 的历史问题 (model 误用 sqlite_where, PostgreSQL 上被忽略 →
     # create_all 建成全表 unique, resolved 行占位阻挡同字段重新开 conflict).
     await _repair_open_conflict_partial_indexes(engine)
+    # migration_019 (schema-snapshot-retirement): drop datasources.schema_snapshot_json
+    # 列. /collections 接口 mysql+mongodb 已统一走 SchemaCanonicalObject 真相源,
+    # snapshot 列 0 读 0 写, 永久退役.
+    await _drop_datasource_schema_snapshot_column(engine)
+    # migration_020 (terminology-schema-attribution): 存量术语 KE/冲突回填.
+    # 术语只归属 schema/namespace: source git→schema, repo_id→NULL. 幂等纯 UPDATE.
+    await _migrate_terminology_source_to_schema(engine)
 
 
 async def _ensure_schema_canonical_objects_table(engine: AsyncEngine) -> None:
@@ -630,6 +637,45 @@ async def _repair_open_conflict_partial_indexes(engine: AsyncEngine) -> None:
                 "[schema_migrations] rebuilt %s as partial unique (WHERE status='open') "
                 "(migration_018)", index_name,
             )
+
+
+async def _drop_datasource_schema_snapshot_column(engine: AsyncEngine) -> None:
+    """migration_019 (schema-snapshot-retirement): drop datasources.schema_snapshot_json.
+
+    背景: schema_snapshot_json 曾是 /collections 接口 mysql 分支的二级下拉数据源
+    (训练时实时 SHOW TABLES 刷新). mongodb 分支早已改读 SchemaCanonicalObject,
+    mysql 分支现也统一切到 SCO 真相源, 该列 0 读 0 写. DROP COLUMN IF EXISTS
+    保证幂等重跑 (旧库无列也安全).
+    """
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "ALTER TABLE datasources DROP COLUMN IF EXISTS schema_snapshot_json"
+        ))
+    log.info(
+        "[schema_migrations] datasources.schema_snapshot_json column dropped "
+        "(migration_019)"
+    )
+
+
+async def _migrate_terminology_source_to_schema(engine: AsyncEngine) -> None:
+    """migration_020 (terminology-schema-attribution): 存量术语 KE/冲突回填.
+
+    术语只归属 schema/namespace: source git→schema, repo_id→NULL.
+    幂等: 二次运行 WHERE 命中 0 行.
+    """
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "UPDATE knowledge_entries SET source='schema', repo_id=NULL "
+            "WHERE entry_type='terminology' AND source='git'"
+        ))
+        await conn.execute(text(
+            "UPDATE terminology_conflicts SET candidate_source='schema', "
+            "candidate_repo_id=NULL "
+            "WHERE candidate_source='git'"
+        ))
+    log.info(
+        "[schema_migrations] terminology source git→schema migrated (migration_020)"
+    )
 
 
 async def _drop_mongo_canonical_layer(engine: AsyncEngine) -> None:

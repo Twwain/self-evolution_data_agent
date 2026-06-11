@@ -49,7 +49,10 @@ class KnowledgeEntry(Base):
 
     # ── 来源追溯 ────────────────────────────────────────
     source: Mapped[str] = mapped_column(String(20), default="manual")
-    """∈ {manual, agent_learn, conversation, git, migration}  (self_answer: legacy, 不再产生新数据)"""
+    """∈ {schema, manual, agent_learn, conversation, git, migration}
+
+    (self_answer: legacy, 不再产生新数据)
+    """
 
     raw_input: Mapped[str] = mapped_column(Text, default="")
     description: Mapped[str] = mapped_column(Text, default="")

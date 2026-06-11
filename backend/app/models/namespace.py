@@ -41,10 +41,6 @@ class DataSource(Base):
     database: Mapped[str] = mapped_column(String(100))
     username: Mapped[str] = mapped_column(String(100))
     password: Mapped[str] = mapped_column(EncryptedString)
-    # 内省后存储的 schema 快照 — JSON 格式
-    # MySQL:   {"tables": ["t1", "t2", ...]}
-    # MongoDB: {"collections": ["c_promo", "c_sku", ...]}
-    schema_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=LOCAL_NOW)
 
     namespace: Mapped["Namespace"] = relationship(back_populates="datasources")

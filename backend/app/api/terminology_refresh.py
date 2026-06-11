@@ -1,7 +1,7 @@
 """术语手动刷新 API — 从训练管道解耦后的独立入口.
 
 用户在 Schema 校对页面解决完冲突后, 手动触发术语全量重新提取.
-流程: 清除 ns 下所有 source=git 的 terminology KE → 全量抽词 → 写入.
+流程: 清除 ns 下所有 source=schema 的 terminology KE → 全量抽词 → 写入.
 """
 from __future__ import annotations
 
@@ -15,9 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_admin
 from app.db.metadata import async_session, get_db
-from app.knowledge.terminology_refresher import refresh_terms_for_repo
+from app.knowledge.terminology_refresher import refresh_namespace_terminology
 from app.knowledge.terminology_vectors import delete_terminology_vectors
-from app.models import GitRepo, KnowledgeEntry, Namespace
+from app.models import KnowledgeEntry, Namespace
 from app.models.terminology_conflict import TerminologyConflict
 from app.models.user import User
 
@@ -39,9 +39,9 @@ async def refresh_terminology(
 ) -> dict:
     """手动触发术语全量重新提取.
 
-    1. 清除该 ns 下所有 entry_type=terminology AND source=git 的 KE (不区分 status)
+    1. 清除该 ns 下所有 entry_type=terminology AND source=schema 的 KE (不区分 status)
     2. 清除对应的 ChromaDB 向量
-    3. 清除 source=git 的 open TerminologyConflict
+    3. 清除 source=schema 的 open TerminologyConflict
     4. 异步执行全量术语抽取
     """
     ns = await db.get(Namespace, ns_id)
@@ -82,37 +82,24 @@ async def _run_refresh(task_id: str, ns_id: int, ns_slug: str) -> None:
     """后台执行: 清除 + 重新抽取."""
     info = _refresh_tasks[task_id]
     try:
-        # ── Step 1: 清除历史 git 术语 ──
+        # ── Step 1: 清除历史 schema 术语 ──
         info["message"] = "清除历史术语..."
         info["progress"] = 10
-        deleted_count = await _purge_git_terminology(ns_id, ns_slug)
-        log.info("[term_refresh] ns=%d 清除 git 术语 %d 条", ns_id, deleted_count)
+        deleted_count = await _purge_schema_terminology(ns_id, ns_slug)
+        log.info("[term_refresh] ns=%d 清除 schema 术语 %d 条", ns_id, deleted_count)
 
         # ── Step 2: 全量抽词 ──
         info["message"] = "正在提取术语..."
         info["progress"] = 30
 
-        # 获取 ns 下所有 repo (取任一 repo_id 作为 source 标记)
         async with async_session() as db:
-            repos = list((await db.execute(
-                select(GitRepo).where(
-                    GitRepo.namespace_id == ns_id,
-                    GitRepo.parse_status == "parsed",
-                )
-            )).scalars().all())
-
-        if not repos:
+            report = await refresh_namespace_terminology(db, ns_id)
+        if report.skipped:
             info["status"] = "completed"
             info["progress"] = 100  # noqa: hardcode
-            info["message"] = "无已解析的仓库, 跳过术语提取"
-            info["result"] = {"inserted": 0, "failed": 0}
+            info["message"] = "无业务术语数据(无 canonical), 跳过抽取"
+            info["result"] = {"inserted": 0, "failed": 0, "reason": report.reason}
             return
-
-        # 用第一个 parsed repo 的 id 作为 source
-        repo_id = repos[0].id
-
-        async with async_session() as db:
-            report = await refresh_terms_for_repo(db, ns_id, repo_id)
 
         info["status"] = "completed"
         info["progress"] = 100  # noqa: hardcode
@@ -132,15 +119,15 @@ async def _run_refresh(task_id: str, ns_id: int, ns_slug: str) -> None:
         info["message"] = f"术语提取失败: {e}"
 
 
-async def _purge_git_terminology(ns_id: int, ns_slug: str) -> int:
-    """清除 ns 下所有 source=git 的 terminology KE + 向量 + 冲突."""
+async def _purge_schema_terminology(ns_id: int, ns_slug: str) -> int:
+    """清除 ns 下所有 source=schema 的 terminology KE + 向量 + 冲突."""
     async with async_session() as db:
         # 查出所有要删的 KE
         ke_rows = list((await db.execute(
             select(KnowledgeEntry).where(
                 KnowledgeEntry.namespace_id == ns_id,
                 KnowledgeEntry.entry_type == "terminology",
-                KnowledgeEntry.source == "git",
+                KnowledgeEntry.source == "schema",
             )
         )).scalars().all())
 
@@ -159,15 +146,15 @@ async def _purge_git_terminology(ns_id: int, ns_slug: str) -> int:
                 delete(KnowledgeEntry).where(
                     KnowledgeEntry.namespace_id == ns_id,
                     KnowledgeEntry.entry_type == "terminology",
-                    KnowledgeEntry.source == "git",
+                    KnowledgeEntry.source == "schema",
                 )
             )
 
-        # 清除 source=git 的 open TerminologyConflict
+        # 清除 source=schema 的 open TerminologyConflict
         await db.execute(
             delete(TerminologyConflict).where(
                 TerminologyConflict.namespace_id == ns_id,
-                TerminologyConflict.candidate_source == "git",
+                TerminologyConflict.candidate_source == "schema",
                 TerminologyConflict.status == "open",
             )
         )

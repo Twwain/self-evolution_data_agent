@@ -75,7 +75,7 @@ async def write_canonical_candidates_from_parse(
     SchemaCanonicalCandidate rows via write_canonical_candidate().
 
     Args:
-        coll_to_db: collection→database 反查表 (从 DataSource.schema_snapshot_json 构建).
+        coll_to_db: collection→database 反查表 (训练时实时连接 DataSource 构建).
             用于补全 LLM 解析结果中缺失的 database 字段.
 
     Returns total candidates written.
@@ -465,7 +465,10 @@ async def _write_terminology_ke(
     db: AsyncSession, namespace_id: int, repo_id: int, term: dict,
     repo_name: str = "",
 ) -> bool:
-    """Create a terminology KE via upsert_terminology_with_validation if available."""
+    """Create a terminology KE via upsert_terminology_with_validation if available.
+
+    repo_id 形参保留但有意忽略: 术语只归属 schema/namespace (ns 级), 不写 repo_id.
+    """
     from app.knowledge.terminology_intake import upsert_terminology_with_validation
 
     term_name = term.get("term") or ""
@@ -485,7 +488,7 @@ async def _write_terminology_ke(
     try:
         ke = await upsert_terminology_with_validation(
             db, ns_id=namespace_id, payload_dict=payload_dict,
-            source="git", repo_id=repo_id,
+            source="schema",  # 术语零 repo_id
         )
         return ke is not None
     except Exception as e:

@@ -161,7 +161,7 @@ class Settings(BaseSettings):
 
     # ── Phase 2 Terminology Refresh (trainer 末端异步 worker) ──
     terminology_refresh_timeout_secs: int = 300  # noqa: hardcode
-    """Phase 2 refresh_terms_for_repo 单 namespace 整体超时, env: IS_TERMINOLOGY_REFRESH_TIMEOUT_SECS"""
+    """Phase 2 refresh_namespace_terminology 单 namespace 整体超时, env: IS_TERMINOLOGY_REFRESH_TIMEOUT_SECS"""
 
     # ── Phase 2 Enum Field Sampling ──
     field_sample_default_limit: int = 50  # noqa: hardcode

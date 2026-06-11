@@ -66,6 +66,39 @@ async def _delete_legacy_kes(db: AsyncSession, repo_id: int) -> list[tuple[int, 
     return [(r[0], r[1], r[2]) for r in rows]
 
 
+async def _delete_schema_terminology(
+    db: AsyncSession, ns_id: int
+) -> list[tuple[int, int | None, str]]:
+    """删 ns 下所有 source=schema 的 terminology KE（ns 级, 与 repo 无关）.
+
+    Returns: [(entry_id, namespace_id, entry_type), ...] 供 ChromaDB 清理.
+
+    设计契约 (spec terminology-schema-attribution 改动 4b):
+        术语只归属 schema/namespace (repo_id=NULL, source=schema), 是 ns 级条目,
+        per-repo 的 _delete_legacy_kes 天然不命中. 全量重建需补一条 ns 维度术语清场,
+        与 per-repo 非术语清场并存 (source 集合不相交: git/mybatis_extract vs schema),
+        无重叠删除; 纯 DELETE 幂等.
+    """
+    rows = (await db.execute(
+        select(
+            KnowledgeEntry.id,
+            KnowledgeEntry.namespace_id,
+            KnowledgeEntry.entry_type,
+        ).where(
+            KnowledgeEntry.namespace_id == ns_id,
+            KnowledgeEntry.entry_type == "terminology",
+            KnowledgeEntry.source == "schema",
+        )
+    )).all()
+    if not rows:
+        return []
+    ids = [r[0] for r in rows]
+    await db.execute(
+        delete(KnowledgeEntry).where(KnowledgeEntry.id.in_(ids))
+    )
+    return [(r[0], r[1], r[2]) for r in rows]
+
+
 async def _delete_open_conflicts(db: AsyncSession, ns_id: int) -> int:
     """删 ns 内 status=open 的 TerminologyConflict, 返回删除行数."""
     tc = await db.execute(
@@ -142,12 +175,18 @@ async def purge_legacy_for_full_rebuild(
         # ── 删 KE (G1: source∈{git, mybatis_extract} ∧ repo_id 全删, 不分 status) ──
         deleted_ke_ids = await _delete_legacy_kes(db, repo_id)
 
+        # ── 删 ns 级 schema 术语 (改动 4b: 全量重建需清并重抽术语) ──
+        # 合并进 deleted_ke_ids, 使步骤 4 ChromaDB 向量清理一并覆盖术语向量.
+        schema_term_rows = await _delete_schema_terminology(db, ns_id)
+        deleted_ke_ids.extend(schema_term_rows)
+
         # ── 兜底清 open conflict (G5) ──
         tc_count = await _delete_open_conflicts(db, ns_id)
 
         reason = (
             f"trainer_full_rebuild repo={repo_id} ns={ns_id} "
             f"ke_deleted={len(deleted_ke_ids)} (git={git_ke_count}, mybatis_extract={mybatis_ke_count}) "
+            f"schema_terminology_deleted={len(schema_term_rows)} "
             f"cascade_audit_deleted={cascade_audit_n} "
             f"cascade_conflict_deleted={cascade_conflict_n} "
             f"open_tc_deleted={tc_count}"

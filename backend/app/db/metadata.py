@@ -3,7 +3,6 @@
 单一数据源, 拒绝全局变量污染
 """
 
-from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
@@ -15,14 +14,11 @@ engine = create_async_engine(
     max_overflow=settings.metadata_pool_max_overflow,
     pool_timeout=settings.metadata_pool_timeout_secs,
     pool_pre_ping=True,
+    # asyncpg 在每条连接建立时强制下发 timezone，覆盖所有连接（含池扩张/重连）。
+    # 取代旧的 connect 事件监听器（async 引擎下触发不稳定，曾导致部分连接仍为 UTC，
+    # 使裸 DEFAULT NOW() 列偶发写成 UTC、与本地时间混杂）。
+    connect_args={"server_settings": {"timezone": "Asia/Shanghai"}},
 )
-
-
-@event.listens_for(engine.sync_engine, "connect")
-def _set_timezone(dbapi_conn, connection_record):
-    cursor = dbapi_conn.cursor()
-    cursor.execute("SET timezone = 'Asia/Shanghai'")
-    cursor.close()
 
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

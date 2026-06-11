@@ -1,0 +1,100 @@
+/* ════════════════════════════════════════════
+ *  Markdown — 最终结果分析文本渲染
+ * ════════════════════════════════════════════ */
+
+.md {
+  font-size: 14px;
+  line-height: 1.7;
+  color: rgba(0, 0, 0, 0.85);
+  word-break: break-word;
+}
+
+.md h1,
+.md h2,
+.md h3 {
+  margin: 16px 0 8px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.md h1 { font-size: 18px; }
+.md h2 { font-size: 16px; }
+.md h3 { font-size: 15px; }
+
+.md p {
+  margin: 6px 0;
+}
+
+.md ul,
+.md ol {
+  margin: 6px 0 6px 22px;
+}
+
+.md li {
+  margin: 2px 0;
+}
+
+.md blockquote {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-left: 3px solid #ffd591;
+  background: #fffbe6;
+  color: #874d00;
+}
+
+.md hr {
+  border: none;
+  border-top: 1px solid #f0f0f0;
+  margin: 14px 0;
+}
+
+.md code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #f3f5f9;
+  font-family: "SF Mono", Monaco, Consolas, monospace;
+  font-size: 12.5px;
+  color: #c41d7f;
+}
+
+.md pre {
+  margin: 8px 0;
+  padding: 12px;
+  border-radius: 6px;
+  background: #f6f8fa;
+  overflow-x: auto;
+}
+
+.md pre code {
+  padding: 0;
+  background: none;
+  color: inherit;
+}
+
+.md table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  width: 100%;
+  font-size: 12.5px;
+}
+
+.md th,
+.md td {
+  border: 1px solid #e8e8e8;
+  padding: 5px 8px;
+  text-align: center;
+}
+
+.md th {
+  background: #fafafa;
+  font-weight: 600;
+}
+
+.md a {
+  color: #1677ff;
+  text-decoration: none;
+}
+
+.md a:hover {
+  text-decoration: underline;
+}

@@ -35,7 +35,7 @@ from app.schemas.knowledge_payload import TerminologyPayload
 
 log = logging.getLogger(__name__)
 
-Source = Literal["git", "manual", "conversation", "agent_learn", "clarify"]
+Source = Literal["schema", "git", "manual", "conversation", "agent_learn", "clarify"]
 
 
 # ════════════════════════════════════════════════════════════════
@@ -139,7 +139,7 @@ async def _create_proposed(
     )
     db.add(ke)
     await db.flush()
-    action = "auto_generate" if source == "git" else "propose"
+    action = "auto_generate" if source in ("schema", "git") else "propose"
     db.add(KnowledgeAuditLog(
         entry_id=ke.id,
         actor_id=None,

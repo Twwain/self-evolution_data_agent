@@ -9,9 +9,12 @@
 import React, { useState } from "react";
 import { Card, Button, message, Input, Space, Popover, Alert } from "antd";
 import { ShareAltOutlined, CopyOutlined } from "@ant-design/icons";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import ResultDisplay from "@/components/ResultDisplay";
 import { createShare } from "@/api";
 import type { QueryResponse } from "@/types";
+import mdStyles from "@/styles/markdown.module.css";
 
 interface Props {
   content: string;
@@ -155,7 +158,11 @@ export const FinalResult: React.FC<Props> = ({ content, rows, columns, chartType
           style={{ marginBottom: 12 }}
         />
       )}
-      {content && <p>{content}</p>}
+      {content && (
+        <div className={mdStyles.md}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        </div>
+      )}
       {fabricated && <ResultDisplay result={fabricated} />}
     </Card>
   );

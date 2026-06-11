@@ -19,7 +19,7 @@ from sqlalchemy import update
 from app.config import settings
 from app.db.metadata import async_session
 from app.engine.repo_worker import _active_workers
-from app.knowledge.terminology_refresher import refresh_terms_for_repo
+from app.knowledge.terminology_refresher import refresh_namespace_terminology
 from app.models.git_repo import GitRepo
 from app.models.knowledge_audit_log import KnowledgeAuditLog
 
@@ -83,7 +83,7 @@ async def run_terminology_stage(
     try:
         async with async_session() as db:
             rr = await asyncio.wait_for(
-                refresh_terms_for_repo(db, ns_id, repo_id),
+                refresh_namespace_terminology(db, ns_id),
                 timeout=settings.terminology_refresh_timeout_secs,
             )
         if rr.skipped:

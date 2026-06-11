@@ -6,8 +6,8 @@
 import { useEffect, useState } from "react";
 import { Button, Modal, Select, Space, Table, Tag, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { fetchNamespaces, getAgentTrace, listAgentTraces } from "@/api";
-import type { Namespace } from "@/types";
+import { getAgentTrace, listAgentTraces } from "@/api";
+import NamespaceSelector from "@/components/NamespaceSelector";
 
 interface TraceRow {
   id: number;
@@ -106,16 +106,11 @@ function TraceDetailModal({
 export default function AgentTracesPage() {
   const [rows, setRows] = useState<TraceRow[]>([]);
   const [loading, setLoading] = useState(false);
-  const [namespaces, setNamespaces] = useState<Namespace[]>([]);
   const [namespaceId, setNamespaceId] = useState<number | undefined>();
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
   const [refining, setRefining] = useState(false);
-
-  useEffect(() => {
-    fetchNamespaces().then(setNamespaces).catch(() => {});
-  }, []);
 
   const load = async () => {
     setLoading(true);
@@ -182,13 +177,10 @@ export default function AgentTracesPage() {
     <div style={{ padding: 24 }}>
       <h2>Agent Traces</h2>
       <Space style={{ marginBottom: 16 }}>
-        <Select
-          allowClear
-          placeholder="Namespace"
+        <NamespaceSelector
           style={{ width: 160 }}
           value={namespaceId}
-          onChange={setNamespaceId}
-          options={namespaces.map((ns) => ({ label: ns.name, value: ns.id }))}
+          onChange={(id) => setNamespaceId(id)}
         />
         <Select
           allowClear

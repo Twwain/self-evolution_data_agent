@@ -82,12 +82,12 @@ async def test_terminology_cancel_within_1_5s(
 
     saw_registered = asyncio.Event()
 
-    async def _slow_refresh(db, ns_id_arg, repo_id_arg):
+    async def _slow_refresh(db, ns_id_arg):
         saw_registered.set()
         await asyncio.sleep(5)  # hang, 直到外部 cancel
         return None  # pragma: no cover - 永不到达
 
-    monkeypatch.setattr(term_stage_module, "refresh_terms_for_repo", _slow_refresh)
+    monkeypatch.setattr(term_stage_module, "refresh_namespace_terminology", _slow_refresh)
 
     async def on_progress(percent: int, message: str) -> None:
         return None

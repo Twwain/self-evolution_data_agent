@@ -259,12 +259,10 @@ async def get_namespace_collections(
 ) -> dict:
     """列出某 database 下的 collections/tables — terminology 编辑表单二级下拉数据源.
 
-    - mongodb: 走 SchemaCanonicalObject (db_type='mongodb') 真相源
-    - mysql: 读 DataSource.schema_snapshot_json.tables 键
-    - 未知 DataSource: db_type=null + collections=[] (前端容错)
+    mysql 与 mongodb 统一走 SchemaCanonicalObject 真相源 (按 db_type + database
+    过滤 distinct target). 未知 DataSource (ns 下无该 database): db_type=null +
+    collections=[] (前端容错).
     """
-    import json
-
     from app.models.schema_canonical_object import SchemaCanonicalObject
 
     ds = (await db.execute(
@@ -277,21 +275,14 @@ async def get_namespace_collections(
     if ds is None:
         return {"database": database, "db_type": None, "collections": []}
 
-    if ds.db_type == "mongodb":
-        rows = (await db.execute(
-            select(SchemaCanonicalObject.target).where(
-                SchemaCanonicalObject.namespace_id == ns_id,
-                SchemaCanonicalObject.db_type == "mongodb",
-                SchemaCanonicalObject.database == database,
-            ).distinct()
-        )).all()
-        colls = [r[0] for r in rows]
-    else:
-        snap = ds.schema_snapshot_json or "{}"
-        try:
-            colls = list(json.loads(snap).get("tables", {}).keys())
-        except json.JSONDecodeError:
-            colls = []
+    rows = (await db.execute(
+        select(SchemaCanonicalObject.target).where(
+            SchemaCanonicalObject.namespace_id == ns_id,
+            SchemaCanonicalObject.db_type == ds.db_type,
+            SchemaCanonicalObject.database == database,
+        ).distinct()
+    )).all()
+    colls = [r[0] for r in rows]
 
     return {"database": database, "db_type": ds.db_type, "collections": colls}
 

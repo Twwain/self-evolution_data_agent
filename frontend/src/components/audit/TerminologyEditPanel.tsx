@@ -83,6 +83,12 @@ export default function TerminologyEditPanel({
 
   const collections = currentDb ? (collectionsByDb[currentDb] ?? []) : [];
 
+  // ── label 按 db_type 区分: mysql 用"表/table", mongodb 用"集合/collection" ──
+  const collectionLabel =
+    value.db_type === "mysql" ? "表 (table)" : "集合 (collection)";
+  const collectionPlaceholder =
+    value.db_type === "mysql" ? "选择表" : "选择集合";
+
   const handleDatabaseChange = (db: string) => {
     // ── primary_database 切换 → 强制重置 collection (避免脏数据) ──
     onChange({
@@ -133,11 +139,11 @@ export default function TerminologyEditPanel({
         />
       </Form.Item>
 
-      <Form.Item label="collection">
+      <Form.Item label={collectionLabel}>
         <Select
           aria-label="collection"
           value={value.primary_collection || undefined}
-          placeholder="选择 collection"
+          placeholder={collectionPlaceholder}
           onChange={(c) => onChange({ ...value, primary_collection: c })}
           disabled={lockRouting || !value.primary_database}
           options={collections.map((c) => ({ label: c, value: c }))}

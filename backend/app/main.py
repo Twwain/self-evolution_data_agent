@@ -106,22 +106,6 @@ async def _migrate_query_history():
             await db.commit()
 
 
-async def _migrate_datasource_schema_snapshot():
-    """datasources 新增 schema_snapshot_json 列 — 存储内省后的表名/集合名快照"""
-    async with async_session() as db:
-        result = await db.execute(text(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_schema = 'public' AND table_name = 'datasources'"
-        ))
-        columns = {row[0] for row in result.fetchall()}
-
-        if "schema_snapshot_json" not in columns:
-            await db.execute(text(
-                "ALTER TABLE datasources ADD COLUMN schema_snapshot_json TEXT DEFAULT NULL"
-            ))
-            await db.commit()
-
-
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # ── 启动: 日志 → 数据目录 → 表 → 迁移 → 管理员 ──
@@ -138,7 +122,6 @@ async def lifespan(_app: FastAPI):
 
     await _migrate_git_repo_status()
     await _migrate_query_history()
-    await _migrate_datasource_schema_snapshot()
     log.info("数据库迁移检查完成")
 
     await _init_admin()

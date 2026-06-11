@@ -95,6 +95,36 @@ async def seeded_db_q_canonical_collections(db, seeded_ns_with_canonicals) -> in
     return ns_id
 
 
+@pytest_asyncio.fixture
+async def seeded_mysql_canonical_tables(db) -> int:
+    """1 ns + 1 mysql DataSource(db_main) + 2 条 SchemaCanonicalObject (mysql)."""
+    ns = Namespace(name="mysql_ns", slug="mysql_ns", description="3.1")
+    db.add(ns)
+    await db.commit()
+    await db.refresh(ns)
+    db.add(DataSource(
+        namespace_id=ns.id,
+        db_type="mysql",
+        database="db_main",
+        host="localhost",
+        port=3306,
+        username="",
+        password="",
+    ))
+    for tbl in ["t_user", "t_order"]:
+        db.add(SchemaCanonicalObject(
+            namespace_id=ns.id,
+            db_type="mysql",
+            database="db_main",
+            target=tbl,
+            description="seed",
+            purpose_detail="seed",
+            reviewed=False,
+        ))
+    await db.commit()
+    return ns.id
+
+
 # ════════════════════════════════════════════
 #  Tests
 # ════════════════════════════════════════════
@@ -127,6 +157,18 @@ async def test_get_collections_for_mongo_db(admin_client, seeded_db_q_canonical_
     assert body["database"] == "db_q"
     assert body["db_type"] == "mongodb"
     assert sorted(body["collections"]) == ["c_category", "c_product", "c_quiz"]
+
+
+@pytest.mark.asyncio
+async def test_get_collections_for_mysql_db(admin_client, seeded_mysql_canonical_tables):
+    """mysql 分支也走 SchemaCanonicalObject 真相源 (migration_019 退役 snapshot 后)."""
+    ns_id = seeded_mysql_canonical_tables
+    resp = await admin_client.get(f"/api/namespaces/{ns_id}/collections?database=db_main")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["database"] == "db_main"
+    assert body["db_type"] == "mysql"
+    assert sorted(body["collections"]) == ["t_order", "t_user"]
 
 
 @pytest.mark.asyncio
