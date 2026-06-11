@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── 应用代码 (须在 pip install 前: hatchling packages=["app"] 打包时需 app/ 就位) ──
 COPY pyproject.toml .
 COPY app/ app/
+COPY prompts/ prompts/
 
 # ── Python 依赖 (含本包) ──
 RUN pip install .

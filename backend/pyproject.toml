@@ -27,6 +27,8 @@ dependencies = [
     "pyahocorasick>=2.0.0",  # AC 自动机术语精确匹配
     "aiomysql>=0.2.0",
     "sqlparse>=0.5.0",
+    "pandas>=2.0.0",
+    "langfuse>=2.0.0",
 ]
 
 [project.optional-dependencies]
