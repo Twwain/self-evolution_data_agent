@@ -1,0 +1,47 @@
+# ─────────────────────────────────────────────────────────────
+# Prod override — 叠加在 docker-compose.yml 之上
+# 用法: docker compose --env-file backend/.env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d
+#   (Makefile 已封装为 make prod-up / prod-down / prod-build)
+#
+# 配置来源: backend/.env.prod (从 backend/.env.prod.example 复制填值, 不入库)
+# PG 在宿主机: .env.prod 里 IS_METADATA_DB_URL 用 host.docker.internal:5432 (现有库直连)
+# ChromaDB: bind mount 宿主目录 IS_CHROMA_HOST_PATH (目标机=/data/chromadb, 见 design AD-7)
+# ⚠ 启动前 Stage0 已把现有向量迁入 /data/chromadb, 否则 new_energy 检索为空
+# ─────────────────────────────────────────────────────────────
+services:
+  backend:
+    # 注入 prod 环境变量 (单一来源, 见 AD-4)
+    env_file:
+      - backend/.env.prod
+    # 容器内访问宿主机 PostgreSQL (host.docker.internal → 宿主网关)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # ChromaDB 向量库 → 宿主目录 (AD-7)。此挂载叠加在 base 的 backend-data:/app/data
+    # 之上, 嵌套覆盖 chroma 子目录; repos/backups/logs 仍留 named volume。
+    volumes:
+      - "${IS_CHROMA_HOST_PATH}:/app/data/chroma"
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+        reservations:
+          memory: 512M
+          cpus: "0.5"
+
+  frontend:
+    # prod 前端走标准 80 端口 (base 未声明 frontend 端口, 此处唯一来源)
+    ports:
+      - "80:80"
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

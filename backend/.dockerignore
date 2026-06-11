@@ -1,0 +1,21 @@
+# ── Python ──
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+
+# ── 数据与密钥 (绝不进镜像) ──
+data/
+.env
+.env.*
+!.env.prod.example
+
+# ── 测试与文档 ──
+tests/
+*.md
+
+# ── 杂项 ──
+.DS_Store
+verification_report.md

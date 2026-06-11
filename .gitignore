@@ -8,6 +8,8 @@ data/
 .env
 .env.*
 !.env.example
+!.env.prod.example
+!.env.test.example
 *.db
 node_modules/
 dist/

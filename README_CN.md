@@ -64,72 +64,72 @@ Self-Evolution Data Agent 消除这些瓶颈：
 
 ---
 
-## 快速开始
+## 环境与部署
 
-### 前置依赖
+项目分三套环境, 配置隔离:
 
-- Python 3.11+
-- Node.js 20+
-- PostgreSQL 16（元数据库）
-- 一个 LLM API Key（默认 Qwen / DashScope，或任意 OpenAI 兼容端点）
+| 环境 | 用途 | 运行方式 | 配置文件 |
+|------|------|----------|----------|
+| **dev** | 本地开发 | 裸跑 (uvicorn + vite) | `backend/.env` |
+| **test** | 单元测试 | `pytest` | `backend/.env.test` |
+| **prod** | 生产部署 | docker-compose | `backend/.env.prod` |
 
-### 1. 配置环境变量
-
-复制示例文件并填入 LLM 凭证：
-
-```bash
-cp .env.example .env
-```
-
-```dotenv
-# LLM 提供商 (按线协议): openai | anthropic
-IS_LLM_PROVIDER=openai
-IS_LLM_API_KEY=your-dashscope-api-key
-IS_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-IS_LLM_MODEL=qwen-plus
-
-# 可选: 克隆私有仓库的 Git 令牌 (GitHub / GitLab / Gitee)
-IS_GIT_TOKEN=
-```
-
-> **提示：** `IS_LLM_BASE_URL` 接受任意 OpenAI 兼容端点，因此 GPT、DeepSeek、本地 vLLM / Ollama 改这一行即可接入。
-
-### 2. 启动 PostgreSQL（元数据库）
+### dev — 本地开发 (裸跑, 不进 docker)
 
 ```bash
-docker run -d --name pg-is -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
-docker exec -it pg-is psql -U postgres -c "CREATE DATABASE intelligent_statistics;"
-docker exec -it pg-is psql -U postgres -c "CREATE DATABASE intelligent_statistics_test;"
+cd backend && cp .env.example .env   # 填入真实值
+cd ../frontend && npm install
+
+# 两个终端分别启动:
+make dev-backend                     # uvicorn :8001 (禁用 --reload, 见 footgun)
+make dev-frontend                    # vite :3000, 代理 /api → :8001
 ```
+访问 http://localhost:3000
 
-连接串通过 `IS_METADATA_DB_URL` 配置（默认 `postgresql+asyncpg://postgres:postgres@localhost:5432/intelligent_statistics`）。
-
-### 3. 启动后端（FastAPI + uvicorn）
+### test — 单元测试
 
 ```bash
-cd backend && pip install .
-make dev-backend          # uvicorn app.main:app --port 8001
+cd backend && cp .env.test.example .env.test   # 填测试库 URL (库名须 _test 结尾)
+pip install -e ".[dev]" && pytest
 ```
 
-验证：打开 <http://localhost:8001/docs>。
-
-### 4. 启动前端（React + Vite）
+### prod — docker-compose 部署
 
 ```bash
-cd frontend && npm install
-make dev-frontend         # vite dev server on port 3000
+cd backend && cp .env.prod.example .env.prod   # 填生产真实值 (DB 密码用现库真实值)
+# PG 在宿主机: 确保 listen_addresses='*' + pg_hba.conf 放行 docker 网段 + reload
+# ChromaDB 目录 (现有向量已在此; 全新机则 mkdir):
+mkdir -p /data/chromadb
+df -T /data/chromadb                            # 确认本地 fs (ext4/xfs, 非 nfs)
+
+make prod-build      # 构建 backend + frontend 镜像
+make prod-up         # 启动 (后端 :8000, 前端 :80)
+make prod-logs       # 跟日志
+make prod-down       # 停止
 ```
+访问 http://<server-ip> (nginx :80 反代 /api → backend:8000, 含 SSE)
 
-打开 <http://localhost:3000> 即可开始提问。
+> **端口**: dev 前端 3000 / 后端 8001; prod 前端 80 / 后端 8000。
+> **PG 编排**: compose 不内置 PG 容器; prod 经 `host.docker.internal` 连宿主机现有 PostgreSQL (库保留直连)。
+> **ChromaDB**: 嵌入式 PersistentClient, prod 数据 bind mount 到宿主机 `IS_CHROMA_HOST_PATH` (默认 `/data/chromadb`), 在宿主可见可备份。
 
-### 用 Docker 运行
+### 数据备份与迁移
+
+prod 的 ChromaDB 向量库落在宿主机 `/data/chromadb`, **不可重建** (重算需全量重 embed)。元数据在宿主机 PostgreSQL, 由 `pg_dump` 单独备份 (不在 docker 范围)。
 
 ```bash
-make build && make up     # docker compose build && up -d
-make down                 # 停止
+# ChromaDB: tar 备份目录 (先停写避免 SQLite 半写)
+make prod-down
+tar czf chroma-$(date +%Y%m%d).tar.gz -C /data/chromadb .
+mkdir -p /data/chromadb && tar xzf chroma-YYYYMMDD.tar.gz -C /data/chromadb   # 恢复
+
+# 换机迁移: 旧机 tar → scp 到新机 → 新机解包到 /data/chromadb → make prod-up
+
+# 宿主机 PG 备份 (与 docker 无关)
+pg_dump intelligent_statistics > intelligent_statistics-$(date +%Y%m%d).sql
 ```
 
-Docker 前端服务在 `3000` 端口，后端在 `8000` 端口。`make up` 前请在 shell 或 `.env` 中设置好 `IS_*` 变量。
+> **文件系统要求**: `IS_CHROMA_HOST_PATH` 须本地 fs (ext4/xfs); NFS/NAS 会致 ChromaDB SQLite 锁损坏。`df -T` 确认。
 
 ### 4 步完成第一次查询
 

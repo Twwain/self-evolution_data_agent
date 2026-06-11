@@ -6,10 +6,11 @@ import os
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import auth as auth_api
 from app.api import audit as audit_api
@@ -18,7 +19,7 @@ from app.api import terminology_conflict as terminology_conflict_api
 from app.api import users as users_api
 from app.knowledge.equivalence import checkers as _equivalence_checkers  # noqa: F401 — side-effect register
 from app.auth import hash_password
-from app.db.metadata import async_session, engine
+from app.db.metadata import async_session, engine, get_db
 from app.db.schema_migrations import run_all as run_schema_migrations
 from app.logging_config import get_logger, setup_logging, trace_id_var
 from app.models.base import Base
@@ -400,5 +401,20 @@ app.include_router(schema_canonical_api.router)
 
 
 @app.get("/api/health")
-async def health():
-    return {"status": "ok"}
+async def health(db: AsyncSession = Depends(get_db)):
+    """探 DB 可达性 — compose healthcheck / depends_on 的真就绪门.
+
+    恒返 200 是健康剧场: DB 断连时编排层仍误判就绪。此处经注入 session
+    SELECT 1 实探, 失败返 503 让 healthcheck 真实失败。
+    经 Depends(get_db) 而非直连 async_session(): 复用 DI 接缝, 测试可
+    经 dependency_overrides[get_db] 注入真实/抛错 session (见 test_health_endpoint)。
+    """
+    try:
+        await db.execute(text("SELECT 1"))
+    except Exception as exc:  # DB 不可达 / 连接池耗尽 / 网络分区
+        log.warning("health check db probe failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "db": "down"},
+        )
+    return {"status": "ok", "db": "ok"}

@@ -62,72 +62,72 @@ Most NL2SQL products treat the LLM as a passive translation machine: you feed it
 
 ---
 
-## Quick Start
+## Environments & Deployment
 
-### Prerequisites
+The project has three environments with isolated configuration:
 
-- Python 3.11+
-- Node.js 20+
-- PostgreSQL 16 (metadata store)
-- An LLM API key (Qwen / DashScope by default, or any OpenAI-compatible endpoint)
+| Environment | Purpose | Runtime | Config File |
+|-------------|---------|---------|-------------|
+| **dev** | Local development | Bare-metal (uvicorn + vite) | `backend/.env` |
+| **test** | Unit tests | `pytest` | `backend/.env.test` |
+| **prod** | Production | docker-compose | `backend/.env.prod` |
 
-### 1. Configure environment
-
-Copy the example env file and fill in your LLM credentials:
-
-```bash
-cp .env.example .env
-```
-
-```dotenv
-# LLM provider (by wire protocol): openai | anthropic
-IS_LLM_PROVIDER=openai
-IS_LLM_API_KEY=your-dashscope-api-key
-IS_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-IS_LLM_MODEL=qwen-plus
-
-# Optional: Git token for cloning private repos (GitHub / GitLab / Gitee)
-IS_GIT_TOKEN=
-```
-
-> **Tip:** `IS_LLM_BASE_URL` accepts any OpenAI-compatible endpoint, so GPT, DeepSeek, or a local vLLM / Ollama server work by changing this one line.
-
-### 2. Start PostgreSQL (metadata database)
+### dev — Local Development (bare-metal, no Docker)
 
 ```bash
-docker run -d --name pg-is -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
-docker exec -it pg-is psql -U postgres -c "CREATE DATABASE intelligent_statistics;"
-docker exec -it pg-is psql -U postgres -c "CREATE DATABASE intelligent_statistics_test;"
+cd backend && cp .env.example .env   # fill in real values
+cd ../frontend && npm install
+
+# Start in two terminals:
+make dev-backend                     # uvicorn :8001 (no --reload, see footgun)
+make dev-frontend                    # vite :3000, proxies /api → :8001
 ```
+Visit http://localhost:3000
 
-The connection string is configured via `IS_METADATA_DB_URL` (defaults to `postgresql+asyncpg://postgres:postgres@localhost:5432/intelligent_statistics`).
-
-### 3. Run the backend (FastAPI + uvicorn)
+### test — Unit Tests
 
 ```bash
-cd backend && pip install .
-make dev-backend          # uvicorn app.main:app --port 8001
+cd backend && cp .env.test.example .env.test   # fill test DB URL (must end in _test)
+pip install -e ".[dev]" && pytest
 ```
 
-Verify it's up: open <http://localhost:8001/docs>.
-
-### 4. Run the frontend (React + Vite)
+### prod — Docker Compose Deployment
 
 ```bash
-cd frontend && npm install
-make dev-frontend         # vite dev server on port 3000
+cd backend && cp .env.prod.example .env.prod   # fill prod credentials (use existing DB password)
+# PG on host: ensure listen_addresses='*' + pg_hba.conf allows docker subnet + reload
+# ChromaDB directory (existing vectors are here; on a fresh machine just mkdir):
+mkdir -p /data/chromadb
+df -T /data/chromadb                            # verify local fs (ext4/xfs, NOT nfs)
+
+make prod-build      # build backend + frontend images
+make prod-up         # start (backend :8000, frontend :80)
+make prod-logs       # tail logs
+make prod-down       # stop
 ```
+Visit http://<server-ip> (nginx :80 reverse-proxies /api → backend:8000, SSE-capable)
 
-Open <http://localhost:3000> and start asking questions.
+> **Ports**: dev frontend 3000 / backend 8001; prod frontend 80 / backend 8000.
+> **PG orchestration**: compose does NOT embed a PG container; prod connects to the host's existing PostgreSQL via `host.docker.internal` (database preserved as-is).
+> **ChromaDB**: embedded PersistentClient; prod data is bind-mounted to the host at `IS_CHROMA_HOST_PATH` (default `/data/chromadb`), visible and backuppable on the host.
 
-### Run with Docker
+### Data Backup & Migration
+
+The prod ChromaDB vector store lives on the host at `/data/chromadb` and is **not rebuildable** (recomputing requires full re-embedding). Metadata lives in the host PostgreSQL, backed up separately via `pg_dump` (outside Docker scope).
 
 ```bash
-make build && make up     # docker compose build && up -d
-make down                 # stop
+# ChromaDB: tar backup (stop writes first to avoid SQLite partial writes)
+make prod-down
+tar czf chroma-$(date +%Y%m%d).tar.gz -C /data/chromadb .
+mkdir -p /data/chromadb && tar xzf chroma-YYYYMMDD.tar.gz -C /data/chromadb   # restore
+
+# Migrate to new host: old host tar → scp to new host → untar to /data/chromadb → make prod-up
+
+# Host PG backup (independent of Docker)
+pg_dump intelligent_statistics > intelligent_statistics-$(date +%Y%m%d).sql
 ```
 
-The Docker frontend is served on port `3000` and the backend on port `8000`. Set the `IS_*` variables in your shell or `.env` before `make up`.
+> **Filesystem requirement**: `IS_CHROMA_HOST_PATH` must be on a local filesystem (ext4/xfs); NFS/NAS will corrupt ChromaDB's SQLite locking. Verify with `df -T`.
 
 ### First query in 4 steps
 

@@ -1,27 +1,36 @@
+# ─────────────────────────────────────────────────────────────
+# Base 骨架 — 环境无关结构 (name / build / ports / volumes / health / deps)
+# 不含业务环境变量与 env_file (见 design AD-4); 业务配置由 override 注入。
+# docker 仅服务 prod: docker compose --env-file backend/.env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d
+# 纯 `docker compose up` (仅 base) 无凭证, backend 不健康 —— 非支持用法。
+# ─────────────────────────────────────────────────────────────
+name: self-evolution_data_agent
+
 services:
   backend:
     build: ./backend
+    image: self-evolution_data_agent-backend:latest
     ports:
       - "8000:8000"
     volumes:
       - backend-data:/app/data
-    environment:
-      - IS_LLM_PROVIDER=${IS_LLM_PROVIDER:-openai}
-      - IS_LLM_API_KEY=${IS_LLM_API_KEY}
-      - IS_LLM_BASE_URL=${IS_LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-      - IS_LLM_MODEL=${IS_LLM_MODEL:-qwen-plus}
-      - IS_CLAUDE_API_KEY=${IS_CLAUDE_API_KEY}
-      - IS_CLAUDE_MODEL=${IS_CLAUDE_MODEL:-claude-sonnet-4-20250514}
-      - IS_CLAUDE_BASE_URL=${IS_CLAUDE_BASE_URL:-https://api.anthropic.com}
-      - IS_GIT_TOKEN=${IS_GIT_TOKEN}
+    healthcheck:
+      # /api/health 经 Stage1 T5 改造已是真探针 (SELECT 1, DB 断连返 503)
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     restart: unless-stopped
 
   frontend:
     build: ./frontend
-    ports:
-      - "3000:80"
+    image: self-evolution_data_agent-frontend:latest
+    # frontend 端口故意不在 base 声明: compose 多文件对 ports 是 append 合并,
+    # 若 base 放 3000:80, prod 会同时暴露 3000 与 80。端口完全交各 override 声明。
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
