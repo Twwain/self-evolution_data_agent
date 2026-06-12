@@ -5,7 +5,7 @@ WORKDIR /app
 
 # 先 COPY 依赖清单 (lockfile + package.json) 利用 layer 缓存
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --registry=https://registry.npmmirror.com
 
 # 再 COPY 源码构建
 COPY . .

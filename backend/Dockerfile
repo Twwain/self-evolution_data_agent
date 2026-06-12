@@ -3,22 +3,33 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
 
 WORKDIR /app
 
-# ── 系统依赖 (git: GitPython 克隆仓库; curl: healthcheck) ──
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# ── apt 换腾讯云镜像 + 系统依赖 (git: GitPython 克隆仓库; curl: healthcheck) ──
+RUN sed -i 's|deb.debian.org|mirrors.cloud.tencent.com|g; s|security.debian.org|mirrors.cloud.tencent.com|g' \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
     git curl \
     && rm -rf /var/lib/apt/lists/*
 
-# ── 应用代码 (须在 pip install 前: hatchling packages=["app"] 打包时需 app/ 就位) ──
+# ── 依赖层 (仅 keyed on pyproject.toml: 改 app 代码不会令此层失效, 跨部署复用缓存) ──
+#  只装第三方依赖, 不装本包; 本包留到下一层经 --no-deps 安装 (避免改代码即重装全部依赖)。
 COPY pyproject.toml .
+RUN python - <<'PY' > /tmp/requirements.txt
+import tomllib
+deps = tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"]
+print("\n".join(deps))
+PY
+RUN pip install -r /tmp/requirements.txt
+
+# ── 应用层 (--no-deps: 依赖已在上一层装好, 此层只构建并安装本包, 不再触网/重装依赖) ──
+#  hatchling packages=["app"] 打包需 app/ 就位, 故本包安装须在 COPY app/ 之后。
 COPY app/ app/
 COPY prompts/ prompts/
-
-# ── Python 依赖 (含本包) ──
-RUN pip install .
+RUN pip install --no-deps .
 
 # ── 数据目录 (ChromaDB / repos / backups) ──
 RUN mkdir -p /app/data
