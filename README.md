@@ -124,7 +124,7 @@ mkdir -p /data/chromadb && tar xzf chroma-YYYYMMDD.tar.gz -C /data/chromadb   # 
 # Migrate to new host: old host tar → scp to new host → untar to /data/chromadb → make prod-up
 
 # Host PG backup (independent of Docker)
-pg_dump intelligent_statistics > intelligent_statistics-$(date +%Y%m%d).sql
+pg_dump self_evolution_data_agent > self_evolution_data_agent-$(date +%Y%m%d).sql
 ```
 
 > **Filesystem requirement**: `IS_CHROMA_HOST_PATH` must be on a local filesystem (ext4/xfs); NFS/NAS will corrupt ChromaDB's SQLite locking. Verify with `df -T`.

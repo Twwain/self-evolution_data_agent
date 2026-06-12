@@ -126,7 +126,7 @@ mkdir -p /data/chromadb && tar xzf chroma-YYYYMMDD.tar.gz -C /data/chromadb   # 
 # 换机迁移: 旧机 tar → scp 到新机 → 新机解包到 /data/chromadb → make prod-up
 
 # 宿主机 PG 备份 (与 docker 无关)
-pg_dump intelligent_statistics > intelligent_statistics-$(date +%Y%m%d).sql
+pg_dump self_evolution_data_agent > self_evolution_data_agent-$(date +%Y%m%d).sql
 ```
 
 > **文件系统要求**: `IS_CHROMA_HOST_PATH` 须本地 fs (ext4/xfs); NFS/NAS 会致 ChromaDB SQLite 锁损坏。`df -T` 确认。

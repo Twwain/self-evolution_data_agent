@@ -21,7 +21,12 @@ jobs:
       - name: Old-name residue guard
         run: |
           # Fail on any in-scope occurrence of the old project name.
-          # Carve-outs MUST match the Phase 5 gate: exclude generated/out-of-scope surfaces.
+          # prod-rename complete: the prod DB now uses the new name, so the former
+          # carve-outs (pg_dump line, *.env.prod.example) are gone. Only genuinely
+          # immutable surfaces remain excluded:
+          #   - CHANGELOG.md : historical record, must not be rewritten
+          #   - name-guard.yml : contains the pattern definition itself (self-match)
+          #   - docs/ : spec history (rename ADRs legitimately cite the old name)
           hits=$(grep -rn "intelligent[_-]statistics\|Intelligent Statistics\|智能统计" . \
             --exclude-dir=.git \
             --exclude-dir=docs \
@@ -31,8 +36,8 @@ jobs:
             --exclude-dir=tmp \
             --exclude-dir=playwright-report \
             --exclude-dir=.playwright-mcp \
-            --exclude="*.env.prod.example" \
-            | grep -v "pg_dump intelligent_statistics" \
+            --exclude=CHANGELOG.md \
+            --exclude=name-guard.yml \
             || true)
           if [ -n "$hits" ]; then
             echo "❌ old project name reappeared in-scope:"; echo "$hits"; exit 1
