@@ -31,8 +31,8 @@ const LoginPage: React.FC = () => {
   return (
     <div className={styles.container}>
       <Card className={styles.card}>
-        <h1 className={styles.title}>智能统计分析平台</h1>
-        <p className={styles.subtitle}>Intelligent Statistics</p>
+        <h1 className={styles.title}>Self-Evolution Data Agent</h1>
+        <p className={styles.subtitle}>Self-Evolution Data Agent</p>
 
         <Form layout="vertical" onFinish={handleSubmit} className={styles.form}>
           <Form.Item

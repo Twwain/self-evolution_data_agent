@@ -21,7 +21,7 @@ from app.models.user import User
 
 TEST_DATABASE_URL = os.environ.get(
     "IS_TEST_DATABASE_URL",
-    "postgresql+asyncpg://postgres:postgres@localhost:5432/intelligent_statistics_test",
+    "postgresql+asyncpg://postgres:postgres@localhost:5432/self_evolution_data_agent_test",
 )
 
 

@@ -44,8 +44,8 @@ const Layout: React.FC = () => {
       <div className={styles.fullScreen}>
         <div className={styles.topBar}>
           <div className={styles.brandArea}>
-            <div className={styles.logoIcon}>IS</div>
-            <span className={styles.brandText}>智能统计</span>
+            <div className={styles.logoIcon}>SE</div>
+            <span className={styles.brandText}>Self-Evolution Data Agent</span>
           </div>
           <div className={styles.userMenu}>
             <span className={styles.username}>{user?.username}</span>
@@ -72,11 +72,11 @@ const Layout: React.FC = () => {
       {/* ── 侧边栏 ── */}
       <aside className={styles.sidebar}>
         <div className={styles.logoArea}>
-          <div className={styles.logoIcon}>IS</div>
+          <div className={styles.logoIcon}>SE</div>
           <div className={styles.logoText}>
-            Intelligent
+            Self-Evolution
             <br />
-            Statistics
+            Data Agent
           </div>
         </div>
 

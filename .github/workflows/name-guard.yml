@@ -1,0 +1,40 @@
+# Permanent old-name residue guard for the self-evolution_data_agent project.
+# Fails the build if the pre-rename project name reappears on any in-scope surface.
+name: name-guard
+
+on:
+  pull_request:
+    branches: [master, main]
+  push:
+    branches:
+      - master
+      - main
+      - 'feature/**'
+      - 'fix/**'
+
+jobs:
+  name-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Old-name residue guard
+        run: |
+          # Fail on any in-scope occurrence of the old project name.
+          # Carve-outs MUST match the Phase 5 gate: exclude generated/out-of-scope surfaces.
+          hits=$(grep -rn "intelligent[_-]statistics\|Intelligent Statistics\|智能统计" . \
+            --exclude-dir=.git \
+            --exclude-dir=docs \
+            --exclude-dir=.deploy \
+            --exclude-dir=node_modules \
+            --exclude-dir=dist \
+            --exclude-dir=tmp \
+            --exclude-dir=playwright-report \
+            --exclude-dir=.playwright-mcp \
+            --exclude="*.env.prod.example" \
+            | grep -v "pg_dump intelligent_statistics" \
+            || true)
+          if [ -n "$hits" ]; then
+            echo "❌ old project name reappeared in-scope:"; echo "$hits"; exit 1
+          fi
+          echo "✅ no in-scope old-name residue"

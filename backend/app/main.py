@@ -1,5 +1,5 @@
 """
-Intelligent Statistics — FastAPI 入口
+Self-Evolution Data Agent — FastAPI 入口
 """
 
 import os
@@ -111,7 +111,7 @@ async def _migrate_query_history():
 async def lifespan(_app: FastAPI):
     # ── 启动: 日志 → 数据目录 → 表 → 迁移 → 管理员 ──
     setup_logging()
-    log.info("Intelligent Statistics 启动中...")
+    log.info("Self-Evolution Data Agent 启动中...")
 
     os.makedirs("./data", exist_ok=True)
     async with engine.begin() as conn:
@@ -209,7 +209,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="Intelligent Statistics",
+    title="Self-Evolution Data Agent",
     version="0.1.0",
     lifespan=lifespan,
 )

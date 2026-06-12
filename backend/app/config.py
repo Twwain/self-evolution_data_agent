@@ -1,5 +1,5 @@
 """
-Intelligent Statistics — 配置中心
+Self-Evolution Data Agent — 配置中心
 所有环境变量集中管理, 零散读取是架构的癌症
 """
 
@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-v4"
 
     # ── 元数据库 ──
-    metadata_db_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/intelligent_statistics"
+    metadata_db_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/self_evolution_data_agent"
     metadata_pool_size: int = 20
     metadata_pool_max_overflow: int = 30
     metadata_pool_timeout_secs: int = 60

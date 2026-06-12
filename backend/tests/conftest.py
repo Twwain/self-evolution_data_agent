@@ -22,7 +22,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env.test")
 # 测试数据库 URL — 从环境变量读取，默认使用远程测试 RDS
 TEST_DATABASE_URL = os.environ.get(
     "IS_TEST_DATABASE_URL",
-    "postgresql+asyncpg://postgres:postgres@localhost:5432/intelligent_statistics_test",
+    "postgresql+asyncpg://postgres:postgres@localhost:5432/self_evolution_data_agent_test",
 )
 
 

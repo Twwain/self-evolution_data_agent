@@ -28,6 +28,7 @@ from langfuse import observe
 from openai import OpenAI
 
 from app.config import settings
+from app.engine.json_parser import parse_llm_json
 from app.tracing import get_client as _lf_client
 
 logger = logging.getLogger(__name__)
@@ -565,12 +566,15 @@ async def chat_completion_with_tools(
     """
     provider = provider or settings.llm_provider
     if provider == "anthropic":
-        return await asyncio.to_thread(
+        resp = await asyncio.to_thread(
             _claude_tool_use, messages, tools, temperature, max_tokens,
         )
-    return await asyncio.to_thread(
-        _openai_tool_use, messages, tools, temperature, max_tokens,
-    )
+    else:
+        resp = await asyncio.to_thread(
+            _openai_tool_use, messages, tools, temperature, max_tokens,
+        )
+    _coerce_tool_call_args(resp.tool_calls, tools)
+    return resp
 
 
 # ── OpenAI-compatible (Chat Completions function calling) ──
@@ -791,3 +795,37 @@ def _safe_json_loads(raw: str | None) -> dict:
     except json.JSONDecodeError:
         logger.warning("OpenAI-compatible tool arguments not valid JSON: %r", raw[:200])
         return {}
+
+
+def _coerce_tool_call_args(tool_calls: list[ToolCall], tools: list[dict]) -> None:
+    """还原被 provider 适配层拍平成字符串的嵌套 object/array 入参 (就地修改).
+
+    部分 Anthropic-兼容代理 (如 DeepSeek modelproxy) 会把 tool_use 入参中声明为
+    object/array 的嵌套字段拍平成 JSON 字符串, 导致下游 `query.get(...)` 等在
+    str 上调用 dict 方法报 `'str' object has no attribute 'get'`. 这里按 tool spec
+    的 input_schema 声明类型, 把本应是 object/array 却收到 str 的字段用统一解析器
+    还原. 解析失败保持原值, 交给后续自然报错, 不掩盖真正畸形的输入.
+    """
+    prop_types: dict[str, dict[str, str]] = {}
+    for spec in tools:
+        name = spec.get("name")
+        props = (spec.get("input_schema") or {}).get("properties") or {}
+        if name:
+            prop_types[name] = {
+                k: v.get("type") for k, v in props.items() if isinstance(v, dict)
+            }
+
+    for tc in tool_calls:
+        types = prop_types.get(tc.name)
+        if not types or not isinstance(tc.input, dict):
+            continue
+        for key, value in tc.input.items():
+            if not isinstance(value, str):
+                continue
+            declared = types.get(key)
+            if declared not in ("object", "array"):
+                continue
+            parsed = parse_llm_json(value, expect="dict" if declared == "object" else "list")
+            if parsed is not None:
+                tc.input[key] = parsed
+
