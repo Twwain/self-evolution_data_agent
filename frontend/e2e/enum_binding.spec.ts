@@ -2,7 +2,7 @@
  * E2E: Enum binding flow — real login, no API mocking.
  *
  * Prerequisites: backend running on localhost:8001, frontend on localhost:3000
- * Admin credentials: admin / Cb1392010
+ * Admin credentials: admin / admin123456
  */
 import { test, expect } from '@playwright/test';
 
@@ -11,7 +11,7 @@ test.describe('enum binding flow', () => {
     // Real login
     await page.goto('/login');
     await page.getByPlaceholder('username').fill('admin');
-    await page.getByPlaceholder('password').fill('Cb1392010');
+    await page.getByPlaceholder('password').fill('admin123456');
     await page.getByRole('button', { name: /登 录/ }).click();
 
     // Wait for redirect to home page after login

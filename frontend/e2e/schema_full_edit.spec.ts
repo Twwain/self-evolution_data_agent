@@ -2,7 +2,7 @@
  * E2E: Schema full edit — real login, no API mocking, chromium-only.
  *
  * Prerequisites: backend running on localhost:8001, frontend on localhost:3000
- * Admin credentials: admin / Cb1392010
+ * Admin credentials: admin / admin123456
  */
 import { test, expect } from "@playwright/test";
 
@@ -16,7 +16,7 @@ test.describe("schema full edit", () => {
     // Real login
     await page.goto("/login");
     await page.getByPlaceholder("username").fill("admin");
-    await page.getByPlaceholder("password").fill("Cb1392010");
+    await page.getByPlaceholder("password").fill("admin123456");
     await page.locator("button").filter({ hasText: /登/ }).click();
     await page.waitForURL("/", { timeout: 10000 });
 

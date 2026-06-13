@@ -9,7 +9,7 @@
  *  manual_edit) 闭环 — 每 case 重新 seed 保证独立性.
  *
  *  Why no mock: fake JWT 触发 axios 401 拦截器自动登出 (api/index.ts), 整页弹回
- *  /login. 此处真后端 + admin/Cb1392010 真登录, e2e 走完整用户路径.
+ *  /login. 此处真后端 + admin/admin123456 真登录, e2e 走完整用户路径.
  * ══════════════════════════════════════════════════════════════════════════ */
 
 import { test, expect, type Page } from "@playwright/test";
@@ -38,7 +38,7 @@ function seedConflict(): SeedResult {
 
 async function loginAsAdmin(page: Page, nsId: number): Promise<string> {
   const resp = await page.request.post("http://localhost:8001/api/auth/login", {
-    data: { username: "admin", password: "Cb1392010" },
+    data: { username: "admin", password: "admin123456" },
   });
   if (!resp.ok()) {
     throw new Error(`admin login failed: ${resp.status()} ${await resp.text()}`);

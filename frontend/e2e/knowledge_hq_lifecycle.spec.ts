@@ -1,14 +1,14 @@
 /* ════════════════════════════════════════════════════════════════════════════
  *  Phase 3 — HQ 全生命周期 e2e: 编辑全部按钮 + 手改 HQ
  * ----------------------------------------------------------------------------
- *  使用真实后端 (localhost:8001) + 真实登录 (admin/Cb1392010).
+ *  使用真实后端 (localhost:8001) + 真实登录 (admin/admin123456).
  *  baseURL = http://localhost:3000 (vite dev), Chromium project.
  * ══════════════════════════════════════════════════════════════════════════ */
 
 import { test, expect } from "@playwright/test";
 
 const ADMIN_USER = "admin";
-const ADMIN_PASS = "Cb1392010";
+const ADMIN_PASS = "admin123456";
 
 async function loginAsAdmin(page: import("@playwright/test").Page) {
   await page.goto("/login");
