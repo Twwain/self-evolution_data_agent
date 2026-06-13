@@ -17,6 +17,7 @@ import {
 import { useNavigate, useLocation, Outlet } from "react-router-dom";
 import { Button } from "antd";
 import { useAuth } from "@/context/AuthContext";
+import { roleAtLeast } from "@/utils/role";
 import styles from "@/styles/layout.module.css";
 
 const adminNavItems = [
@@ -39,7 +40,7 @@ const Layout: React.FC = () => {
   };
 
   /* ── User 布局: 无侧边栏,全屏 ── */
-  if (user?.role !== "admin") {
+  if (!roleAtLeast(user?.role, "admin")) {
     return (
       <div className={styles.fullScreen}>
         <div className={styles.topBar}>
@@ -49,6 +50,13 @@ const Layout: React.FC = () => {
           </div>
           <div className={styles.userMenu}>
             <span className={styles.username}>{user?.username}</span>
+            <Button
+              type="text"
+              size="small"
+              onClick={() => navigate("/profile")}
+            >
+              修改密码
+            </Button>
             <Button
               type="text"
               size="small"
@@ -102,6 +110,13 @@ const Layout: React.FC = () => {
             <UserOutlined />
             <span>{user?.username}</span>
           </div>
+          <Button
+            type="text"
+            size="small"
+            onClick={() => navigate("/profile")}
+          >
+            修改密码
+          </Button>
           <Button
             type="text"
             size="small"

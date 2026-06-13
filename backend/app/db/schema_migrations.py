@@ -416,6 +416,74 @@ async def run_all(engine: AsyncEngine) -> None:
     # migration_020 (terminology-schema-attribution): 存量术语 KE/冲突回填.
     # 术语只归属 schema/namespace: source git→schema, repo_id→NULL. 幂等纯 UPDATE.
     await _migrate_terminology_source_to_schema(engine)
+    # migration_021 (three-tier-rbac): role 扩列 + ns.created_by + admin 升级 + 回填 + FK 修复
+    await _migrate_rbac_three_tier(engine)
+
+
+async def _migrate_rbac_three_tier(engine: AsyncEngine) -> None:
+    """migration_021 (three-tier-rbac): role 扩列 + namespace.created_by
+    + bootstrap admin 升 super_admin + 存量 admin 访问权回填 + 自引用 FK 修复。
+    单事务, 幂等。"""
+    async with engine.begin() as conn:
+        # ★ 一次性判据: 回填只在"从旧 schema 首次迁移"时执行。role 列宽是天然的
+        #   迁移版本标记 — 旧库 VARCHAR(10), 迁移后 VARCHAR(20)。若不以此设防,
+        #   run_all 每次启动都重跑回填, 把"每个 admin × 每个 namespace"的 access
+        #   行补全 (NOT EXISTS 只防重复行, 不防语义错误) → admin 作用域被永久架空,
+        #   迁移后新建的 admin 一旦经历重启就重新获得全部 namespace 访问。
+        width = await conn.scalar(text(
+            "SELECT character_maximum_length FROM information_schema.columns "
+            "WHERE table_name='users' AND column_name='role'"
+        ))
+        is_first_migration = width is not None and width < 20
+
+        # 1. role 列扩宽 (VARCHAR(10)→VARCHAR(20)) — 容纳 'super_admin'
+        await conn.execute(text(
+            "ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(20)"
+        ))
+        # 2. namespaces.created_by (幂等)
+        await conn.execute(text(
+            "ALTER TABLE namespaces ADD COLUMN IF NOT EXISTS created_by INTEGER "
+            "REFERENCES users(id) ON DELETE SET NULL"
+        ))
+        # 3. bootstrap 账号 admin → super_admin (幂等: 二次命中 0 行)
+        await conn.execute(text(
+            "UPDATE users SET role='super_admin' "
+            "WHERE username='admin' AND role='admin'"
+        ))
+        # 4. ★ 语义保持回填 (仅首次迁移): 残留 admin × 全部现存 ns 的 UserNamespaceAccess。
+        #    迁移前 admin 全局可见, 升级后改 owner∪granted 作用域 — 首次迁移必须回填,
+        #    否则瞬间失去全部数据访问。但只能跑一次: 迁移后新建的 admin 应按作用域语义
+        #    管理, 不能被后续启动的 run_all 重新提权为"全局可见"。
+        if is_first_migration:
+            await conn.execute(text(
+                "INSERT INTO user_namespace_access (user_id, namespace_id) "
+                "SELECT u.id, n.id FROM users u CROSS JOIN namespaces n "
+                "WHERE u.role='admin' AND NOT EXISTS ("
+                "  SELECT 1 FROM user_namespace_access una "
+                "  WHERE una.user_id=u.id AND una.namespace_id=n.id)"
+            ))
+        # 5. ★ 自引用 FK 补 ON DELETE SET NULL (存量库修复)。旧 users.created_by FK
+        #    无 ondelete (PG 默认 NO ACTION) → 删有下属的 admin 触发 IntegrityError 500。
+        #    幂等: 查现有 delete_rule, 已是 SET NULL 跳过; 否则 drop 旧约束 + 建新。
+        fk_rule = await conn.scalar(text(
+            "SELECT rc.delete_rule FROM information_schema.referential_constraints rc "
+            "JOIN information_schema.table_constraints tc "
+            "  ON rc.constraint_name = tc.constraint_name "
+            "WHERE tc.table_name='users' AND tc.constraint_type='FOREIGN KEY' "
+            "  AND rc.constraint_name LIKE '%created_by%'"
+        ))
+        if fk_rule is not None and fk_rule != "SET NULL":
+            cname = await conn.scalar(text(
+                "SELECT tc.constraint_name FROM information_schema.table_constraints tc "
+                "WHERE tc.table_name='users' AND tc.constraint_type='FOREIGN KEY' "
+                "  AND tc.constraint_name LIKE '%created_by%'"
+            ))
+            await conn.execute(text(f"ALTER TABLE users DROP CONSTRAINT {cname}"))
+            await conn.execute(text(
+                "ALTER TABLE users ADD CONSTRAINT users_created_by_fkey "
+                "FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL"
+            ))
+    log.info("[schema_migrations] three-tier RBAC migrated + backfilled + FK fixed (migration_021)")
 
 
 async def _ensure_schema_canonical_objects_table(engine: AsyncEngine) -> None:

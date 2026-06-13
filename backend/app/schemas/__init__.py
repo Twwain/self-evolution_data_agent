@@ -6,12 +6,23 @@ Pydantic 请求/响应模型
 from __future__ import annotations
 
 import json
+import re as _re
 from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.config import settings as _settings
 from app.models.knowledge_entry import KnowledgeStatus
+
+
+def validate_password_strength(v: str) -> str:
+    """密码 >= 配置最小长度, 且字母+数字混合。"""
+    if len(v) < _settings.password_min_length:
+        raise ValueError(f"密码至少 {_settings.password_min_length} 位")
+    if not (_re.search(r"[A-Za-z]", v) and _re.search(r"\d", v)):
+        raise ValueError("密码必须包含字母和数字")
+    return v
 
 
 # ════════════════════════════════════════════
@@ -35,6 +46,7 @@ class NamespaceOut(BaseModel):
     slug: str
     description: str
     created_at: datetime
+    created_by: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -503,17 +515,27 @@ class LoginResponse(BaseModel):
 
 class PasswordChangeRequest(BaseModel):
     old_password: str = Field(min_length=1)
-    new_password: str = Field(min_length=6)
+    new_password: str
+
+    _v_pwd = field_validator("new_password")(validate_password_strength)
+
+
+class PasswordResetRequest(BaseModel):
+    new_password: str
+
+    _v_pwd = field_validator("new_password")(validate_password_strength)
 
 
 class UserCreate(BaseModel):
     username: str = Field(min_length=1, max_length=50)
-    password: str = Field(min_length=6)
-    role: str = Field(pattern=r"^(admin|user)$", default="user")
+    password: str
+    role: str = Field(pattern=r"^(super_admin|admin|user)$", default="user")
+
+    _v_pwd = field_validator("password")(validate_password_strength)
 
 
 class UserUpdate(BaseModel):
-    role: str | None = Field(pattern=r"^(admin|user)$", default=None)
+    role: str | None = Field(pattern=r"^(super_admin|admin|user)$", default=None)
     is_active: bool | None = None
 
 
@@ -523,6 +545,7 @@ class UserOut(BaseModel):
     role: str
     is_active: bool
     created_at: datetime
+    created_by: int | None = None
     model_config = {"from_attributes": True}
 
 

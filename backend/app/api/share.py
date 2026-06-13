@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_admin
+from app.auth import accessible_namespace_ids, assert_ns_access, get_current_user
 from app.db.metadata import get_db
 from app.models import QueryHistory, SharedResult
 from app.models.user import User
@@ -28,26 +28,33 @@ def _nanoid(size: int = 21) -> str:
 
 @router.get("", response_model=list[ShareOut])
 async def list_shares(
-    admin: User = Depends(require_admin),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """列出所有分享链接 (admin only)"""
-    result = await db.execute(
-        select(SharedResult).order_by(SharedResult.created_at.desc())
-    )
+    """列出分享链接 — 按 ns 作用域过滤 (share→history→ns); super_admin 全量。"""
+    allowed = await accessible_namespace_ids(db, user)
+    stmt = select(SharedResult).order_by(SharedResult.created_at.desc())
+    if allowed is not None:
+        stmt = (
+            stmt.join(QueryHistory, SharedResult.query_history_id == QueryHistory.id)
+            .where(QueryHistory.namespace_id.in_(allowed))
+            .distinct()
+        )
+    result = await db.execute(stmt)
     return result.scalars().all()
 
 
 @router.post("", response_model=ShareOut, status_code=201)
 async def create_share(
     body: ShareCreate,
-    admin: User = Depends(require_admin),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """创建分享链接 (admin only)"""
+    """创建分享链接 — 需对该 history 所属 ns 有访问权 (user 可分享自己 ns 的历史)。"""
     entry = await db.get(QueryHistory, body.query_history_id)
     if not entry or not entry.result_snapshot:
         raise HTTPException(404, "查询记录不存在或无结果快照")
+    await assert_ns_access(db, user, entry.namespace_id)
 
     # 前端传 UTC ISO 字符串 (aware), 转为本地 naive 以匹配 DB 列类型
     expires_at = (
@@ -58,7 +65,7 @@ async def create_share(
     shared = SharedResult(
         token=_nanoid(),
         query_history_id=body.query_history_id,
-        shared_by=admin.id,
+        shared_by=user.id,
         expires_at=expires_at,
     )
     db.add(shared)
@@ -130,16 +137,20 @@ async def view_share(
 @router.delete("/{token}", status_code=204)
 async def deactivate_share(
     token: str,
-    admin: User = Depends(require_admin),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """停用分享链接 (admin only)"""
+    """停用分享链接 — 需对该 share 所属 ns 有访问权。"""
     result = await db.execute(
         select(SharedResult).where(SharedResult.token == token)
     )
     shared = result.scalars().first()
     if not shared:
         raise HTTPException(404, "分享链接不存在")
+
+    history = await db.get(QueryHistory, shared.query_history_id)
+    if history is not None:
+        await assert_ns_access(db, user, history.namespace_id)
 
     shared.is_active = False
     await db.commit()

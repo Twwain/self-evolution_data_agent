@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_admin
+from app.auth import require_ns_manage
 from app.db.metadata import async_session, get_db
 from app.knowledge.terminology_refresher import refresh_namespace_terminology
 from app.knowledge.terminology_vectors import delete_terminology_vectors
@@ -34,7 +34,7 @@ _refresh_tasks: dict[str, dict] = {}
 @router.post("/refresh")
 async def refresh_terminology(
     ns_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """手动触发术语全量重新提取.
@@ -69,7 +69,7 @@ async def refresh_terminology(
 async def get_refresh_progress(
     ns_id: int,
     task_id: str,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
 ) -> dict:
     """查询术语刷新进度."""
     info = _refresh_tasks.get(task_id)

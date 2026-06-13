@@ -148,7 +148,7 @@ pg_dump self_evolution_data_agent > self_evolution_data_agent-$(date +%Y%m%d).sq
 
 | 模块 | 职责 |
 |---|---|
-| `engine/llm.py` | 统一 LLM 调用入口；Qwen / Claude（及任意 OpenAI 兼容端点）路由 |
+| `engine/llm.py` | 统一 LLM 调用入口；OpenAI 兼容协议（Qwen、GPT、DeepSeek、vLLM、Ollama）与 Anthropic 协议（Claude）双线路由 |
 | `engine/executor.py` | 查询全流程：加载数据源 → 澄清 → 路由引擎 → 安全检查 → 执行 → 可视化 → 存历史 |
 | `engine/agent_loop` | 多轮推理-行动循环，含工具调用、三桶配额、死循环检测 |
 | `drivers/mysql.py` | MySQL 引擎（aiomysql + INFORMATION_SCHEMA 探查）|
@@ -161,7 +161,7 @@ pg_dump self_evolution_data_agent > self_evolution_data_agent-$(date +%Y%m%d).sq
 |---|---|
 | **前端** | React + Vite · SSE 流式客户端 · Vitest / Playwright |
 | **后端** | Python 3.11 + FastAPI + uvicorn · asyncio agent loop |
-| **LLM** | Qwen / Claude 双 provider · 统一 `chat_completion` 路由 · OpenAI 兼容端点 |
+| **LLM** | OpenAI / Anthropic 双线协议 · 统一 `chat_completion` 路由 · 任意 OpenAI 兼容端点 |
 | **检索** | ChromaDB 向量库 · 中文 embedding · 分层召回 |
 | **元数据** | PostgreSQL 16 · 命名空间 / 知识 / agent traces |
 | **执行** | 统一 agent loop · MySQL (aiomysql) / MongoDB (Motor) driver |
@@ -171,6 +171,21 @@ pg_dump self_evolution_data_agent > self_evolution_data_agent-$(date +%Y%m%d).sq
 - **MySQL：** 仅 `SELECT`、自动 `LIMIT`、`EXPLAIN` 行数预检（> 500K 行阻断，> 100K 行警告）。
 - **MongoDB：** 操作白名单（`find` / `aggregate` / `count_documents`），强制 `$limit`。
 - **Agent：** 三桶配额 + 死循环检测 + 错误类强制澄清 + 多重取消兜底。
+- **凭证：** 数据源密码 Fernet 字段级加密落库（`EncryptedString` 列类型），存量明文行下次写入时自动迁移为密文。
+
+### 访问控制（RBAC）
+
+三级角色模型，namespace 作用域隔离：
+
+| 角色 | 作用域 | 能力 |
+|------|--------|------|
+| **super_admin** | 全局 | 完整系统权限、用户管理、所有 namespace |
+| **admin** | Namespace 所有者 | 管理自有 namespace、数据源、知识、训练 |
+| **user** | 被授权 namespace | 在被授权的 namespace 内查询 |
+
+- JWT 认证（`IS_JWT_SECRET`），默认会话 24 小时。
+- Namespace 所有权：创建者自动获得权限；admin 管理自有 namespace。
+- 管理员重置密码 / 用户自助改密（profile 页面）。
 
 ---
 
@@ -183,7 +198,7 @@ text-to-SQL 库把一个 prompt 翻译成一句 SQL。Self-Evolution Data Agent 
 不需要。业务人员用自然语言提问，Agent 自动为 MySQL 或 MongoDB 生成并执行查询。
 
 **支持哪些 LLM？**
-开箱支持 Qwen 和 Claude。`IS_LLM_PROVIDER` 按线协议选路 —— `openai`（任意 OpenAI 兼容端点：GPT、DeepSeek、Qwen/DashScope、本地 vLLM / Ollama，配合 `IS_LLM_BASE_URL`）或 `anthropic`（Claude）。
+支持任何 OpenAI 兼容或 Anthropic 兼容端点的模型。`IS_LLM_PROVIDER` 按线协议选路 —— `openai`（GPT、Qwen/DashScope、DeepSeek、本地 vLLM / Ollama，或任意 OpenAI 兼容端点，配合 `IS_LLM_BASE_URL`）或 `anthropic`（Claude，配合 `IS_CLAUDE_API_KEY`）。
 
 **我的生产库安全吗？**
 连接为只读。Agent 永不修改表结构、不装插件、不动业务代码。SQL 仅 `SELECT`，并强制行数上限与执行前行数预检。

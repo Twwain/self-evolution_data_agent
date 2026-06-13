@@ -198,6 +198,9 @@ export const setUserAccess = (id: number, namespace_ids: number[]) =>
 export const getUserAccess = (id: number) =>
   http.get<Namespace[]>(`/users/${id}/access`).then((r) => r.data);
 
+export const resetUserPassword = (id: number, new_password: string) =>
+  http.post(`/users/${id}/reset-password`, { new_password }).then((r) => r.data);
+
 /* ── 分享 ── */
 // 独立 axios 实例, 无 JWT — 公开查看接口
 const publicHttp = axios.create({ baseURL: "/api", timeout: 60_000 });

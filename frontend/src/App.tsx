@@ -14,6 +14,8 @@ import ShareManagePage from "./pages/ShareManagePage";
 import LoginPage from "./pages/LoginPage";
 import ShareViewPage from "./pages/ShareViewPage";
 import AgentTracesPage from "./pages/AgentTracesPage";
+import ProfilePage from "./pages/ProfilePage";
+import { roleAtLeast } from "@/utils/role";
 
 /* ── 认证守卫 ── */
 const RequireAuth: React.FC = () => {
@@ -22,10 +24,10 @@ const RequireAuth: React.FC = () => {
   return token ? <Outlet /> : <Navigate to="/login" replace />;
 };
 
-/* ── 管理员守卫 ── */
+/* ── 管理准入守卫 (admin 及以上, super_admin 也通过) ── */
 const RequireAdmin: React.FC = () => {
   const { user } = useAuth();
-  return user?.role === "admin" ? <Outlet /> : <Navigate to="/" replace />;
+  return roleAtLeast(user?.role, "admin") ? <Outlet /> : <Navigate to="/" replace />;
 };
 
 const App: React.FC = () => (
@@ -39,6 +41,7 @@ const App: React.FC = () => (
       <Route element={<RequireAuth />}>
         <Route element={<Layout />}>
           <Route path="/" element={<QueryPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
 
           {/* 管理员专属路由 */}
           <Route element={<RequireAdmin />}>

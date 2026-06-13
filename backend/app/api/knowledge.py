@@ -18,7 +18,7 @@ from app.api._audit_helpers import (
     chroma_delete_safe,
     resolve_ns_slug,
 )
-from app.auth import require_admin
+from app.auth import assert_ns_access, require_admin_or_above, require_ns_manage
 from app.config import settings
 from app.db.metadata import get_db
 from app.knowledge.audit import detect_conflict_against_canonical, write_audit
@@ -70,7 +70,7 @@ log = logging.getLogger(__name__)
 @router.get("/api/namespaces/{ns_id}/knowledge", response_model=list[KnowledgeEntryOut])
 async def list_knowledge(
     ns_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     """列出命名空间专属 + 全局知识"""
@@ -91,7 +91,7 @@ async def list_knowledge(
 )
 async def create_knowledge(
     body: KnowledgeEntryCreate,
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -104,11 +104,12 @@ async def create_knowledge(
     Phase 1c Task 1.5 — terminology 通道走统一闸门 upsert_terminology_with_validation,
     跳过 refine/conflict 既有路径; 闸门做 schema/db_type/唯一键三重校验, 失败 422.
     """
-    ns: Namespace | None = None
-    if body.namespace_id is not None:
-        ns = await db.get(Namespace, body.namespace_id)
-        if not ns:
-            raise HTTPException(404, "命名空间不存在")
+    if body.namespace_id is None:
+        raise HTTPException(422, "namespace_id 必填")
+    await assert_ns_access(db, actor, body.namespace_id)
+    ns = await db.get(Namespace, body.namespace_id)
+    if not ns:
+        raise HTTPException(404, "命名空间不存在")
 
     # ── Phase 1c: terminology 通道走统一闸门 ──
     if body.entry_type == "terminology":
@@ -224,13 +225,14 @@ _TERMINAL_STATES = ("superseded", "rejected")
 @router.get("/api/knowledge/{entry_id}", response_model=KnowledgeEntryOut)
 async def get_knowledge_entry(
     entry_id: int,
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ):
     """获取单条知识条目详情 — Stage 2 Task D RelatedEntryDetailModal 使用."""
     entry = await db.get(KnowledgeEntry, entry_id)
     if not entry:
         raise HTTPException(404, "知识条目不存在")
+    await assert_ns_access(db, actor, entry.namespace_id)
     return entry
 
 
@@ -239,7 +241,7 @@ async def delete_knowledge(
     entry_id: int,
     mode: str = Query("soft", pattern=r"^(soft|hard)$"),
     reason: str = Query(..., min_length=1),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """Stage 3 Task 6 — 升级版删除: soft (默认, 软删) / hard (物理删, 受 settings 开关).
@@ -255,10 +257,11 @@ async def delete_knowledge(
     entry = await db.get(KnowledgeEntry, entry_id)
     if not entry:
         raise HTTPException(404, "知识条目不存在")
+    await assert_ns_access(db, actor, entry.namespace_id)
 
     if mode == "hard":
-        return await _delete_hard(db, entry, admin.id, reason)
-    return await _delete_soft(db, entry, admin.id, reason)
+        return await _delete_hard(db, entry, actor.id, reason)
+    return await _delete_soft(db, entry, actor.id, reason)
 
 
 async def _delete_soft(
@@ -409,7 +412,7 @@ async def _sync_chromadb_after_patch(
 async def patch_knowledge(
     entry_id: int,
     body: KnowledgeEntryUpdate,
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -420,6 +423,7 @@ async def patch_knowledge(
     entry = await db.get(KnowledgeEntry, entry_id)
     if not entry:
         raise HTTPException(404, "知识条目不存在")
+    await assert_ns_access(db, actor, entry.namespace_id)
 
     ns_slug = ""
     if entry.namespace_id is not None:
@@ -463,7 +467,7 @@ async def patch_knowledge(
 async def edit_knowledge(
     entry_id: int,
     body: EditCanonicalBody,
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ) -> EditCanonicalOut:
     """编辑知识条目 (proposed/canonical/superseded), 写 audit_log + 编辑后冲突检测.
@@ -477,6 +481,7 @@ async def edit_knowledge(
     entry = await db.get(KnowledgeEntry, entry_id)
     if not entry:
         raise HTTPException(404, "知识条目不存在")
+    await assert_ns_access(db, actor, entry.namespace_id)
     if entry.status not in ("canonical", "proposed", "superseded"):
         raise HTTPException(
             422, f"invalid_state_transition: {entry.status} 禁止编辑",
@@ -554,7 +559,7 @@ async def edit_knowledge(
     await write_audit(
         db, entry_id=entry.id, action="edit",
         from_status=old_status, to_status=entry.status,
-        actor_id=admin.id, reason=body.reason,
+        actor_id=actor.id, reason=body.reason,
         diff={"before": before, "after": after},
     )
     await db.commit()
@@ -574,13 +579,14 @@ async def edit_knowledge(
 @router.post("/api/knowledge/{entry_id}/supersede", response_model=KnowledgeEntryOut)
 async def supersede_knowledge(
     entry_id: int,
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ):
     """软下线: status=superseded + is_superseded=True + 从 ChromaDB 删向量. 不删 DB 行, 保留审计."""
     entry = await db.get(KnowledgeEntry, entry_id)
     if not entry:
         raise HTTPException(404, "知识条目不存在")
+    await assert_ns_access(db, actor, entry.namespace_id)
 
     ns_slug = ""
     if entry.namespace_id is not None:
@@ -617,7 +623,7 @@ async def supersede_knowledge(
 @router.get("/api/namespaces/{ns_id}/repos", response_model=RepoListResponse)
 async def list_repos(
     ns_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -645,7 +651,7 @@ async def list_repos(
 async def add_repo(
     ns_id: int,
     body: GitRepoCreate,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     ns = await db.get(Namespace, ns_id)
@@ -662,7 +668,7 @@ async def add_repo(
 async def delete_repo(
     ns_id: int,
     repo_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     """删除 Git 仓库 — 外键约束会级联删除相关 mappings 和 knowledge entries"""
@@ -682,7 +688,7 @@ async def delete_repo(
 async def parse_repo(
     ns_id: int,
     repo_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     """触发异步解析 — 返回 worker_id, 通过 progress 端点查进度"""
@@ -703,7 +709,7 @@ async def parse_repo(
 async def get_repo_progress(
     ns_id: int,
     repo_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     """查询解析进度"""
@@ -723,7 +729,7 @@ async def get_repo_progress(
 async def batch_parse_repos(
     ns_id: int,
     force: bool = False,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -826,7 +832,7 @@ async def batch_parse_repos(
 async def cancel_parse(
     ns_id: int,
     repo_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     """取消正在进行的解析 (含 terminology 阶段).
@@ -875,7 +881,7 @@ async def cancel_parse(
 async def list_repo_mappings(
     ns_id: int,
     repo_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -893,7 +899,7 @@ async def add_repo_mapping(
     ns_id: int,
     repo_id: int,
     body: RepoMappingCreate,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     repo = await db.get(GitRepo, repo_id)
@@ -912,7 +918,7 @@ async def delete_repo_mapping(
     ns_id: int,
     repo_id: int,
     mapping_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     mapping = await db.get(RepoDataSourceMapping, mapping_id)
@@ -933,7 +939,7 @@ async def delete_repo_mapping(
 async def get_parse_report(
     ns_id: int,
     repo_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     """查看历史解析报告"""
@@ -948,7 +954,7 @@ async def get_parse_report(
 @router.get("/api/namespaces/{ns_id}/git-ke-summary")
 async def get_git_ke_summary(
     ns_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     """返回该 ns 下所有 git repo 的 source=git KE 统计 (供前端全量解析 banner)."""

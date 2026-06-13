@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_admin
+from app.auth import assert_ns_access, require_admin_or_above, require_ns_manage
 from app.db.metadata import get_db
 from app.models.extraction_failure_log import ExtractionFailureLog
 from app.models.user import User
@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 @router.get("/api/namespaces/{ns_id}/extraction-failures")
 async def list_extraction_failures(
     ns_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     """列出命名空间下的抽取失败记录."""
@@ -54,13 +54,14 @@ async def list_extraction_failures(
 @router.post("/api/extraction-failures/{failure_id}/retry")
 async def retry_extraction_failure(
     failure_id: int,
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ):
     """标记重试 (递增 retry_count, 更新 last_seen_at)."""
     row = await db.get(ExtractionFailureLog, failure_id)
     if not row:
         raise HTTPException(404, "记录不存在")
+    await assert_ns_access(db, actor, row.namespace_id)
     row.retry_count += 1
     row.last_seen_at = datetime.now()
     await db.commit()
@@ -70,13 +71,14 @@ async def retry_extraction_failure(
 @router.post("/api/extraction-failures/{failure_id}/ignore")
 async def ignore_extraction_failure(
     failure_id: int,
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ):
     """忽略 (物理删除该记录)."""
     row = await db.get(ExtractionFailureLog, failure_id)
     if not row:
         raise HTTPException(404, "记录不存在")
+    await assert_ns_access(db, actor, row.namespace_id)
     await db.delete(row)
     await db.commit()
     return {"status": "ignored"}

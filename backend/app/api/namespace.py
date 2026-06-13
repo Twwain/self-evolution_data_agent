@@ -13,7 +13,14 @@ from pymongo import MongoClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user, require_admin
+from app.auth import (
+    ROLE_ADMIN,
+    accessible_namespace_ids,
+    assert_ns_owner,
+    get_current_user,
+    require_admin_or_above,
+    require_ns_manage,
+)
 from app.config import settings
 from app.db.metadata import get_db
 from app.engine.registry import delete_knowledge_collection
@@ -43,31 +50,30 @@ async def list_namespaces(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    列出命名空间 — 权限隔离
-    - Admin: 看到所有命名空间
-    - User: 仅看到有权限访问的命名空间
-    """
-    if user.role == "admin":
-        result = await db.execute(select(Namespace).order_by(Namespace.created_at.desc()))
-    else:
-        result = await db.execute(
-            select(Namespace)
-            .join(UserNamespaceAccess)
-            .where(UserNamespaceAccess.user_id == user.id)
-            .order_by(Namespace.created_at.desc())
-        )
+    """列出命名空间 — super_admin 见全部; admin/user 见 owner∪granted。"""
+    allowed = await accessible_namespace_ids(db, user)
+    stmt = select(Namespace).order_by(Namespace.created_at.desc())
+    if allowed is not None:
+        stmt = stmt.where(Namespace.id.in_(allowed))
+    result = await db.execute(stmt)
     return result.scalars().all()
 
 
 @router.post("", response_model=NamespaceOut, status_code=201)
 async def create_namespace(
     body: NamespaceCreate,
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ):
-    ns = Namespace(name=body.name, slug=body.slug, description=body.description)
+    """创建命名空间。记录 created_by; admin 自动获得访问权 (super_admin 全局无需)。"""
+    ns = Namespace(
+        name=body.name, slug=body.slug, description=body.description,
+        created_by=actor.id,
+    )
     db.add(ns)
+    await db.flush()
+    if actor.role == ROLE_ADMIN:
+        db.add(UserNamespaceAccess(user_id=actor.id, namespace_id=ns.id))
     await db.commit()
     await db.refresh(ns)
     return ns
@@ -77,10 +83,11 @@ async def create_namespace(
 async def update_namespace(
     ns_id: int,
     body: NamespaceUpdate,
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ):
     ns = await _get_namespace(db, ns_id)
+    await assert_ns_owner(db, actor, ns_id)
     if body.name is not None:
         ns.name = body.name
     if body.description is not None:
@@ -101,7 +108,7 @@ async def delete_namespace(
         None,
         description="dry_run=false 且 affected_count > 阈值时必填; 由 dry_run 报告下发",
     ),
-    admin: User = Depends(require_admin),
+    actor: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ):
     """命名空间删除 (Stage 2 Task 4) — BulkOpGuard 接管 KE 删除 + 大批量确认机制.
@@ -122,13 +129,14 @@ async def delete_namespace(
     处测试期接受. 前端配合 dry_run + confirm dialog 升级.
     """
     ns = await _get_namespace(db, ns_id)
+    await assert_ns_owner(db, actor, ns_id)
 
     # ── BulkOpGuard preview 探影响范围 (永远 dry_run, 无副作用)
     preview_guard = BulkOperationGuard(
         op_name="namespace_delete",
         scope_filter={"namespace_id": ns_id},
         dry_run=True,
-        actor_id=admin.id,
+        actor_id=actor.id,
         reason=f"namespace delete ns_id={ns_id}",
         full_purge=True,
     )
@@ -180,7 +188,7 @@ async def delete_namespace(
         op_name="namespace_delete",
         scope_filter={"namespace_id": ns_id},
         dry_run=False,
-        actor_id=admin.id,
+        actor_id=actor.id,
         reason=f"namespace delete ns_id={ns_id} confirmed",
         full_purge=True,
     )
@@ -226,7 +234,7 @@ def _compute_confirm_token(ns_id: int, affected_count: int) -> str:
 @router.get("/{ns_id}/datasources", response_model=list[DataSourceOut])
 async def list_datasources(
     ns_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     await _get_namespace(db, ns_id)
@@ -243,7 +251,7 @@ async def list_datasources(
 @router.get("/{ns_id}/databases")
 async def get_namespace_databases(
     ns_id: int,
-    user: User = Depends(get_current_user),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """列出 ns 下所有 DataSource — terminology 编辑表单一级下拉数据源."""
@@ -267,7 +275,7 @@ async def get_namespace_databases(
 async def get_namespace_collections(
     ns_id: int,
     database: str,
-    user: User = Depends(get_current_user),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """列出某 database 下的 collections/tables — terminology 编辑表单二级下拉数据源.
@@ -304,7 +312,7 @@ async def get_namespace_collections(
 async def add_datasource(
     ns_id: int,
     body: DataSourceCreate,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     await _get_namespace(db, ns_id)
@@ -327,7 +335,7 @@ async def add_datasource(
 async def test_datasource(
     ns_id: int,
     ds_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     ds = await db.get(DataSource, ds_id)
@@ -357,7 +365,7 @@ async def test_datasource(
 async def refresh_schema(
     ns_id: int,
     ds_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     """刷新数据源 schema — 数据库结构变更后调用"""
@@ -386,7 +394,7 @@ async def refresh_schema(
 async def delete_datasource(
     ns_id: int,
     ds_id: int,
-    admin: User = Depends(require_admin),
+    _user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ):
     """删除数据源 — 外键约束会级联删除相关 repo mappings"""

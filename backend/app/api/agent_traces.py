@@ -12,7 +12,13 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_admin
+from app.auth import (
+    ROLE_SUPER_ADMIN,
+    accessible_namespace_ids,
+    assert_ns_access,
+    require_admin_or_above,
+    role_at_least,
+)
 from app.config import settings
 from app.db.metadata import get_db
 from app.models import AgentTrace
@@ -28,13 +34,18 @@ async def list_traces(
     status: str | None = Query(None),
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=200),
-    _admin: User = Depends(require_admin),
+    actor: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ):
     """列表 agent_traces, 支持 namespace_id / status 过滤, 分页."""
+    allowed = await accessible_namespace_ids(db, actor)
     stmt = select(AgentTrace).order_by(AgentTrace.created_at.desc())
     if namespace_id is not None:
+        if allowed is not None and namespace_id not in allowed:
+            raise HTTPException(403, f"No access to namespace {namespace_id}")
         stmt = stmt.where(AgentTrace.namespace_id == namespace_id)
+    elif allowed is not None:
+        stmt = stmt.where(AgentTrace.namespace_id.in_(allowed))
     if status:
         stmt = stmt.where(AgentTrace.status == status)
     stmt = stmt.offset((page - 1) * size).limit(size)
@@ -69,7 +80,7 @@ async def list_traces(
 @router.get("/api/agent-traces/{trace_id}")
 async def get_trace_detail(
     trace_id: str,
-    _admin: User = Depends(require_admin),
+    actor: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ):
     """获取单条 trace 详情 (含完整 trace_json + reflection_log_json)."""
@@ -78,6 +89,12 @@ async def get_trace_detail(
     )).scalar_one_or_none()
     if row is None:
         raise HTTPException(404, "trace 不存在")
+    if row.namespace_id is None:
+        # 无 ns 的历史 trace 仅 super_admin 可见
+        if not role_at_least(actor, ROLE_SUPER_ADMIN):
+            raise HTTPException(403, "No access")
+    else:
+        await assert_ns_access(db, actor, row.namespace_id)
     return {
         "id": row.id,
         "trace_id": row.trace_id,
@@ -109,7 +126,7 @@ class RefineOut(BaseModel):
 @router.post("/api/agent-traces/refine", response_model=RefineOut)
 async def refine_traces_endpoint(
     body: RefineRequest,
-    _admin: User = Depends(require_admin),
+    actor: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ):
     """批量提炼 agent traces → 产 proposed KE 入待审池."""
@@ -125,6 +142,14 @@ async def refine_traces_endpoint(
     )).scalars().all()
     if not rows:
         return RefineOut(proposed_count=0, proposed_ke_ids=[])
+
+    # ── ns 作用域 (Phase 3.7): 对涉及的所有 ns 逐一校验 (任一越权 403) ──
+    for nid in {r.namespace_id for r in rows}:
+        if nid is None:
+            if not role_at_least(actor, ROLE_SUPER_ADMIN):
+                raise HTTPException(403, "No access")
+        else:
+            await assert_ns_access(db, actor, nid)
 
     # ── 解析 namespace ─ refine 走 save_knowledge 需要 (ns_id, ns_slug). ──
     #    所有 trace 同 namespace_id (前端只在单 ns 视角发起批量提炼).      ──

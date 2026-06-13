@@ -19,7 +19,7 @@ from app.api._audit_helpers import (
     resolve_ns_slug,
     sync_amem_chroma_deletes,
 )
-from app.auth import require_admin
+from app.auth import accessible_namespace_ids, assert_ns_access, require_admin_or_above
 from app.config import settings
 from app.db.metadata import get_db
 from app.knowledge.audit import (
@@ -64,7 +64,7 @@ async def list_audit_queue(
         ge=1,
         le=settings.audit_page_size_max,
     ),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ) -> AuditQueueOut:
     """待审/已审知识条目队列 — 按 created_at desc.
@@ -74,11 +74,19 @@ async def list_audit_queue(
     q 关键词匹配 content + description + payload 三字段 OR (大小写无关).
     分页: page (1-based) + size (默认/上限受 IS_AUDIT_PAGE_SIZE_* 控制).
     """
+    # ── ns 作用域收窄 (Phase 3.3): super_admin 全量; 余按 accessible 集合 ──
+    allowed = await accessible_namespace_ids(db, admin)
+    if namespace_id is not None:
+        if allowed is not None and namespace_id not in allowed:
+            raise HTTPException(403, f"No access to namespace {namespace_id}")
+
     stmt = apply_entry_filters(
         select(KnowledgeEntry),
         namespace_id=namespace_id, entry_type=entry_type,
         status=status, source=source, q=q,
     )
+    if namespace_id is None and allowed is not None:
+        stmt = stmt.where(KnowledgeEntry.namespace_id.in_(allowed))
     total = await paginate_count(db, stmt)
     rows = (await db.scalars(
         stmt.order_by(KnowledgeEntry.created_at.desc())
@@ -141,7 +149,7 @@ async def _supersede_old_entries(
 async def approve_entry(
     entry_id: int,
     body: AuditApproveBody,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ) -> KnowledgeEntry:
     """审核通过 proposed → canonical, 可选 inline 编辑 + supersede 旧条目.
@@ -152,6 +160,7 @@ async def approve_entry(
     entry = await db.get(KnowledgeEntry, entry_id)
     if entry is None:
         raise HTTPException(404, "知识条目不存在")
+    await assert_ns_access(db, admin, entry.namespace_id)
     if entry.status != "proposed":
         raise HTTPException(
             422,
@@ -218,7 +227,7 @@ async def approve_entry(
 async def reject_entry(
     entry_id: int,
     body: AuditRejectBody,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ) -> KnowledgeEntry:
     """审核拒绝 proposed/canonical → rejected, reason 必填.
@@ -229,6 +238,7 @@ async def reject_entry(
     entry = await db.get(KnowledgeEntry, entry_id)
     if entry is None:
         raise HTTPException(404, "知识条目不存在")
+    await assert_ns_access(db, admin, entry.namespace_id)
     if entry.status not in ("proposed", "canonical"):
         raise HTTPException(
             422,
@@ -284,6 +294,7 @@ async def _apply_action_atomic(
     entry = await db.get(KnowledgeEntry, action.entry_id)
     if entry is None:
         raise ValueError(f"entry_not_found: id={action.entry_id}")
+    await assert_ns_access(db, admin, entry.namespace_id)
     now = datetime.now()
 
     if action.action == "approve":
@@ -355,7 +366,7 @@ async def _sync_batch_chromadb(
 @router.post("/api/knowledge/audit/batch", response_model=AuditBatchOut)
 async def audit_batch(
     body: AuditBatchBody,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ) -> AuditBatchOut:
     """批量审核 — 单事务 all-or-nothing, 超阈值强制 confirm_token.
@@ -409,7 +420,7 @@ async def audit_batch(
 async def restore_entry(
     entry_id: int,
     body: AuditRestoreBody,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ) -> KnowledgeEntry:
     """rejected → canonical 反向恢复, reason 必填.
@@ -420,6 +431,7 @@ async def restore_entry(
     entry = await db.get(KnowledgeEntry, entry_id)
     if entry is None:
         raise HTTPException(404, "知识条目不存在")
+    await assert_ns_access(db, admin, entry.namespace_id)
     if entry.status != "rejected":
         raise HTTPException(
             422,
@@ -457,7 +469,7 @@ async def restore_entry(
 )
 async def list_entry_audit_log(
     entry_id: int,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ) -> list[AuditLogOut]:
     """某 entry 的 audit_log 时间线 — 按 created_at asc 列出.
@@ -465,6 +477,10 @@ async def list_entry_audit_log(
     entry 已 hard-delete 也允许查 (审计独立保留, 返 [] 而非 404),
     供 review UI 复盘已彻底删除的条目历史.
     """
+    # ── ns 作用域 (Phase 3.3): entry 仍存在则按其 ns 校验; 已删则审计独立放行 ──
+    entry = await db.get(KnowledgeEntry, entry_id)
+    if entry is not None:
+        await assert_ns_access(db, admin, entry.namespace_id)
     rows = await list_audit_logs(db, entry_id)
     return [AuditLogOut.model_validate(r) for r in rows]
 
@@ -480,7 +496,7 @@ async def list_entry_audit_log(
 )
 async def preview_conflicts(
     body: ConflictPreviewBody,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ) -> ConflictPreviewOut:
     """实时冲突预览 — 编辑表单内置, 不写库, 不动 ChromaDB.
@@ -489,6 +505,9 @@ async def preview_conflicts(
     (`detect_conflict_against_canonical`), 保证前后端 conflicts schema 完全对齐.
     entry_id 可选: 编辑场景传入排除自身, 新建场景留空全量比对.
     """
+    if body.namespace_id is None:
+        raise HTTPException(422, "namespace_id 必填")
+    await assert_ns_access(db, admin, body.namespace_id)
     conflicts = await detect_conflict_against_canonical(
         db,
         namespace_id=body.namespace_id,

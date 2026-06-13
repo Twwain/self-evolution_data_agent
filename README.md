@@ -146,7 +146,7 @@ Natural language → LLM (Agent Loop + tool calls) → DB execution → chart / 
 
 | Layer | Responsibility |
 |---|---|
-| `engine/llm.py` | Unified LLM entry point; routes between Qwen / Claude (and any OpenAI-compatible endpoint) |
+| `engine/llm.py` | Unified LLM entry point; routes between OpenAI-compatible (Qwen, GPT, DeepSeek, vLLM, Ollama) and Anthropic (Claude) wire protocols |
 | `engine/executor.py` | Full query flow: load datasource → clarify → route engine → safety check → execute → visualize → persist |
 | `engine/agent_loop` | Multi-round reasoning-and-acting loop with tool calls, quota buckets, and dead-loop detection |
 | `drivers/mysql.py` | MySQL driver (aiomysql + INFORMATION_SCHEMA introspection) |
@@ -159,7 +159,7 @@ Natural language → LLM (Agent Loop + tool calls) → DB execution → chart / 
 |---|---|
 | **Frontend** | React + Vite · SSE streaming client · Vitest / Playwright |
 | **Backend** | Python 3.11 + FastAPI + uvicorn · asyncio agent loop |
-| **LLM** | Qwen / Claude dual provider · unified `chat_completion` routing · OpenAI-compatible endpoints |
+| **LLM** | OpenAI / Anthropic dual wire protocol · unified `chat_completion` routing · any OpenAI-compatible endpoint |
 | **Retrieval** | ChromaDB vector store · Chinese embeddings · layered recall |
 | **Metadata** | PostgreSQL 16 · namespaces / knowledge / agent traces |
 | **Execution** | Unified agent loop · MySQL (aiomysql) / MongoDB (Motor) drivers |
@@ -169,6 +169,21 @@ Natural language → LLM (Agent Loop + tool calls) → DB execution → chart / 
 - **MySQL:** `SELECT`-only, automatic `LIMIT`, `EXPLAIN` row-count pre-check (blocks > 500K rows, warns > 100K).
 - **MongoDB:** operation allowlist (`find` / `aggregate` / `count_documents`), forced `$limit`.
 - **Agent:** quota buckets + dead-loop detection + forced clarification on error classes + cancellation safety nets.
+- **Credentials:** datasource passwords are Fernet-encrypted at rest (field-level `EncryptedString` column type); legacy plaintext rows are transparently migrated on next write.
+
+### Access control (RBAC)
+
+Three-tier role model with namespace-scoped isolation:
+
+| Role | Scope | Capabilities |
+|------|-------|--------------|
+| **super_admin** | Global | Full system access, user management, all namespaces |
+| **admin** | Namespace-owner | Manage owned namespaces, datasources, knowledge, training |
+| **user** | Namespace-granted | Query within granted namespaces |
+
+- JWT-based authentication (`IS_JWT_SECRET`), default session 24 h.
+- Namespace ownership: creator auto-granted; admins manage their own namespaces.
+- Password reset by admin or self-service via profile page.
 
 ---
 
@@ -181,7 +196,7 @@ A text-to-SQL library translates one prompt into one SQL string. Self-Evolution 
 No. Business users ask in natural language. The agent generates and executes the query for MySQL or MongoDB.
 
 **Which LLMs are supported?**
-Qwen and Claude out of the box. `IS_LLM_PROVIDER` selects the wire protocol — `openai` (any OpenAI-compatible endpoint: GPT, DeepSeek, Qwen/DashScope, local vLLM / Ollama, via `IS_LLM_BASE_URL`) or `anthropic` (Claude).
+Any model behind an OpenAI-compatible or Anthropic-compatible endpoint. `IS_LLM_PROVIDER` selects the wire protocol — `openai` (GPT, Qwen/DashScope, DeepSeek, local vLLM / Ollama, or any OpenAI-compatible endpoint via `IS_LLM_BASE_URL`) or `anthropic` (Claude via `IS_CLAUDE_API_KEY`).
 
 **Is my production database safe?**
 Connections are read-only. The agent never alters table structures, installs plugins, or touches business code. SQL is `SELECT`-only with enforced row limits and pre-execution row-count checks.

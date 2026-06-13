@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user
+from app.auth import require_ns_manage
 from app.db.metadata import get_db
 from app.knowledge.schema_canonical import (
     get_schema_canonical,
@@ -84,7 +84,7 @@ class SchemaCanonicalPatch(BaseModel):
 async def list_canonicals(
     ns_id: int,
     db_type: str | None = Query(None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> list[SchemaCanonicalOut]:
     """列出 namespace 下全部 schema canonical."""
@@ -96,7 +96,7 @@ async def list_canonicals(
 async def get_canonical(
     ns_id: int,
     sco_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> SchemaCanonicalOut:
     """获取单条 schema canonical 详情."""
@@ -111,7 +111,7 @@ async def patch_canonical(
     ns_id: int,
     sco_id: int,
     body: SchemaCanonicalPatch,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> SchemaCanonicalOut:
     """编辑 schema canonical (description / fields description).
@@ -148,7 +148,7 @@ async def patch_canonical(
 @router.post("/refresh")
 async def refresh_canonicals(
     ns_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """触发 MySQL introspect 刷新 (重新从 INFORMATION_SCHEMA 拉取)."""

@@ -11,7 +11,7 @@ from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.crypto import EncryptedString
-from app.models.base import Base, LOCAL_NOW
+from app.models.base import Base, LOCAL_NOW, local_now
 
 
 class Namespace(Base):
@@ -21,7 +21,12 @@ class Namespace(Base):
     name: Mapped[str] = mapped_column(String(100), unique=True)
     slug: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     description: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=LOCAL_NOW)
+    created_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=LOCAL_NOW, default=local_now,
+    )
 
     # ── 关联 ──
     datasources: Mapped[list["DataSource"]] = relationship(
@@ -41,6 +46,8 @@ class DataSource(Base):
     database: Mapped[str] = mapped_column(String(100))
     username: Mapped[str] = mapped_column(String(100))
     password: Mapped[str] = mapped_column(EncryptedString)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=LOCAL_NOW)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=LOCAL_NOW, default=local_now,
+    )
 
     namespace: Mapped["Namespace"] = relationship(back_populates="datasources")

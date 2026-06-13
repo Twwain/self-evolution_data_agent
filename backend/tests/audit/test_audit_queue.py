@@ -13,7 +13,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_admin
+from app.auth import get_current_user
 from app.db.metadata import get_db
 from app.main import app
 from app.models import KnowledgeEntry, Namespace
@@ -30,7 +30,7 @@ async def admin_user(db_session: AsyncSession) -> User:
     user = User(
         username="admin_audit_q",
         password_hash="x",
-        role="admin",
+        role="super_admin",
         is_active=True,
     )
     db_session.add(user)
@@ -47,7 +47,7 @@ async def http_client(
         yield db_session
 
     app.dependency_overrides[get_db] = _override_db
-    app.dependency_overrides[require_admin] = lambda: admin_user
+    app.dependency_overrides[get_current_user] = lambda: admin_user
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

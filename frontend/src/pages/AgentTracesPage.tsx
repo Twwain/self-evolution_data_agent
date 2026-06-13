@@ -3,7 +3,7 @@
  *  含 Stage 2 抓手 C: reflection_log 详情 Modal
  * ════════════════════════════════════════════ */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Modal, Select, Space, Table, Tag, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { getAgentTrace, listAgentTraces } from "@/api";
@@ -111,16 +111,18 @@ export default function AgentTracesPage() {
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
   const [refining, setRefining] = useState(false);
+  const reqSeq = useRef(0);
 
   const load = async () => {
+    const seq = ++reqSeq.current;
     setLoading(true);
     try {
       const data = await listAgentTraces({ namespace_id: namespaceId, status: statusFilter, size: 100 });
-      setRows(data);
+      if (seq === reqSeq.current) setRows(data);
     } catch {
-      message.error("加载 traces 失败");
+      if (seq === reqSeq.current) message.error("加载 traces 失败");
     } finally {
-      setLoading(false);
+      if (seq === reqSeq.current) setLoading(false);
     }
   };
 

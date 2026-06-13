@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user, require_admin
+from app.auth import require_ns_manage
 from app.config import settings
 from app.db.metadata import get_db
 from app.engine.tools.probe_tools import inspect_field_values
@@ -155,7 +155,7 @@ class AuditLogOut(BaseModel):
 async def promote_endpoint(
     ns_id: int,
     body: PromoteBody | None = None,
-    user: User = Depends(require_admin),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> PromoteResponse:
     """手动触发 ns-wide promote."""
@@ -169,7 +169,7 @@ async def promote_endpoint(
 async def list_conflicts(
     ns_id: int,
     status: Literal["open", "resolved", "all"] = Query("open"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> list[ConflictOut]:
     await _verify_namespace(db, ns_id)
@@ -188,7 +188,7 @@ async def list_conflicts(
 async def get_conflict(
     ns_id: int,
     cid: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> ConflictOut:
     row = await db.get(SchemaCanonicalConflict, cid)
@@ -202,7 +202,7 @@ async def resolve_conflict(
     ns_id: int,
     cid: int,
     body: ConflictResolveBody,
-    user: User = Depends(require_admin),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> ConflictOut:
     row = await db.get(SchemaCanonicalConflict, cid)
@@ -304,7 +304,7 @@ async def resolve_conflict(
 @router.get("/pending-candidates")
 async def list_pending_candidates(
     ns_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     """待汇聚候选聚合视图 — 按 (target, field_path, candidate_kind) 分组."""
@@ -349,7 +349,7 @@ async def list_pending_candidates(
 @router.get("/evidence-only")
 async def list_evidence_only_fields(
     ns_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     """待确认字段列表 — confidence_status=evidence_only 且 status=pending."""
@@ -394,7 +394,7 @@ async def list_candidates(
     sco_id: int,
     field_path: str | None = Query(None),
     status: str | None = Query(None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> list[CandidateOut]:
     sco = await db.get(SchemaCanonicalObject, sco_id)
@@ -421,7 +421,7 @@ async def evidence_endpoint(
     ns_id: int,
     sco_id: int,
     field: str = Query(..., description="字段路径"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """返回该字段的所有 candidate evidence."""
@@ -449,7 +449,7 @@ async def confirm_field(
     ns_id: int,
     sco_id: int,
     body: ConfirmFieldBody,
-    user: User = Depends(require_admin),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """evidence_only 候选的人工确认."""
@@ -515,7 +515,7 @@ async def lock_field(
     ns_id: int,
     sco_id: int,
     body: LockBody,
-    user: User = Depends(require_admin),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     sco = await db.get(SchemaCanonicalObject, sco_id)
@@ -537,7 +537,7 @@ async def unlock_field(
     ns_id: int,
     sco_id: int,
     body: UnlockBody,
-    user: User = Depends(require_admin),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     sco = await db.get(SchemaCanonicalObject, sco_id)
@@ -568,7 +568,7 @@ async def audit_log_endpoint(
         le=settings.schema_audit_log_page_max,
     ),
     cursor: int | None = Query(None, description="last seen id for pagination"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> list[AuditLogOut]:
     await _verify_namespace(db, ns_id)
@@ -599,7 +599,7 @@ async def audit_log_endpoint(
 @router.get("/pending-counts", response_model=PendingCountsOut)
 async def pending_counts(
     ns_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> PendingCountsOut:
     """UI 顶部计数徽章数据源."""
@@ -649,7 +649,7 @@ async def pending_enum_binding(
     namespace_id: int | None = Query(None),
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=200),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Scan all SCO fields_json for enum_match_status='pending'."""
@@ -698,7 +698,7 @@ async def bind_field_to_enum(
     sco_id: int,
     field_name: str,
     body: _BindEnumBody,
-    user: User = Depends(require_admin),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Bind field to EnumDictionary with sample_values coverage check."""
@@ -766,7 +766,7 @@ async def unbind_field_enum(
     ns_id: int,
     sco_id: int,
     field_name: str,
-    user: User = Depends(require_admin),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Unbind field from enum, revert to pending if field has enum suffix."""
@@ -836,7 +836,7 @@ async def inspect_samples_endpoint(
     sco_id: int,
     field_name: str,
     body: _InspectSamplesBody | None = None,
-    user: User = Depends(require_admin),
+    user: User = Depends(require_ns_manage),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Call inspect_field_values and write sample_values to fields_json."""

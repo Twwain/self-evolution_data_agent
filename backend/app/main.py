@@ -31,15 +31,17 @@ access_log = get_logger("access")
 
 
 async def _init_admin():
-    """首次启动时创建默认管理员 admin/Cb1392010"""
+    """首次启动创建默认超级管理员 admin (密码取 IS_DEFAULT_ADMIN_PASSWORD)。"""
+    from app.auth import ROLE_SUPER_ADMIN
+    from app.config import settings
     async with async_session() as db:
         result = await db.execute(select(User).where(User.username == "admin"))
         if result.scalars().first():
             return
         admin = User(
             username="admin",
-            password_hash=hash_password("Cb1392010"),
-            role="admin",
+            password_hash=hash_password(settings.default_admin_password),
+            role=ROLE_SUPER_ADMIN,
         )
         db.add(admin)
         await db.commit()

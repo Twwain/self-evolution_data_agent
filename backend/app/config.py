@@ -405,6 +405,12 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me-in-production"
     jwt_expire_hours: int = 24
 
+    # ── 密码强度 ──
+    password_min_length: int = 8
+
+    # ── bootstrap 默认账号 ──
+    default_admin_password: str = "admin123456"
+
     # ── 数据源凭证加密 ──
     # Fernet 密钥 (urlsafe-base64, 32 字节)。生产必须用 IS_DATASOURCE_ENCRYPTION_KEY
     # 覆盖此 dev 默认值; 轮换密钥需先用旧 key 解密存量再用新 key 重写。

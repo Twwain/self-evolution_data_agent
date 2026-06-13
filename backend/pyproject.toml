@@ -46,6 +46,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
+# pytest-asyncio 1.x 默认 fixture/test loop scope 为 function, 与本项目 session 级
+# 引擎 fixture (_engine) 冲突 → "attached to a different loop"。锁回 session 级
+# (项目原 event_loop session fixture 的等价配置), 保证 db rollback fixture 可用。
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 markers = [
     "real_llm: tests that require a real LLM API key (skipped by default in CI; gated to acceptance phase)",
     "live: real-system tests, opt-in via -m live",

@@ -21,10 +21,12 @@ export default defineConfig({
     {
       name: 'firefox',
       use: { ...devices['Desktop Firefox'] },
+      testIgnore: /rbac_/,   // RBAC e2e 只测权限逻辑, 不依赖渲染, 仅跑 chromium
     },
     {
       name: 'webkit',
       use: { ...devices['Desktop Safari'] },
+      testIgnore: /rbac_/,
     },
   ],
 

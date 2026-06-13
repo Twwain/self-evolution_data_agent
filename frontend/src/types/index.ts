@@ -199,12 +199,15 @@ export interface ParseReport {
 }
 
 /* ── 用户认证 ── */
+export type Role = "super_admin" | "admin" | "user";
+
 export interface User {
   id: number;
   username: string;
-  role: "admin" | "user";
+  role: Role;
   is_active: boolean;
   created_at: string;
+  created_by: number | null;
 }
 
 export interface LoginResponse {

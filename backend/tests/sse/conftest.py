@@ -66,4 +66,4 @@ async def test_namespace(db_session: AsyncSession):
 
 @pytest.fixture
 def admin_user():
-    return User(id=1, username="admin", role="admin", password_hash="x")
+    return User(id=1, username="admin", role="super_admin", password_hash="x")

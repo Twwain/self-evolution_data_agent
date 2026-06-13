@@ -18,19 +18,36 @@ import {
 } from "antd";
 import { PlusOutlined, UserOutlined } from "@ant-design/icons";
 import * as api from "@/api";
+import { useAuth } from "@/context/AuthContext";
 import type { Namespace, User } from "@/types";
 import styles from "@/styles/user.module.css";
 import globalStyles from "@/styles/global.module.css";
 
+/** 与后端 IS_PASSWORD_MIN_LENGTH 默认值同步 */
+const PASSWORD_MIN_LENGTH = 8;
+
 const UserManagePage: React.FC = () => {
+  const { user: currentUser } = useAuth();
   const [users, setUsers] = useState<User[]>([]);
   const [activeUserId, setActiveUserId] = useState<number | null>(null);
   const [namespaces, setNamespaces] = useState<Namespace[]>([]);
   const [userAccess, setUserAccess] = useState<number[]>([]);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showResetModal, setShowResetModal] = useState(false);
   const [form] = Form.useForm();
   const [createForm] = Form.useForm();
+  const [resetForm] = Form.useForm();
   const [loading, setLoading] = useState(false);
+
+  /* 角色选项 — super_admin 三选, admin 仅 user (锁定) */
+  const roleOptions =
+    currentUser?.role === "super_admin"
+      ? [
+          { value: "super_admin", label: "超级管理员 (super_admin)" },
+          { value: "admin", label: "管理员 (admin)" },
+          { value: "user", label: "普通用户 (user)" },
+        ]
+      : [{ value: "user", label: "普通用户 (user)" }];
 
   /* 获取当前用户 ID (从 localStorage) */
   const currentUserId = (() => {
@@ -152,6 +169,21 @@ const UserManagePage: React.FC = () => {
   const activeUser = users.find((u) => u.id === activeUserId);
   const isSelf = activeUserId === currentUserId;
 
+  /* ── 重置密码 (上级特权) ── */
+  const handleReset = async () => {
+    if (!activeUserId) return;
+    try {
+      const vals = await resetForm.validateFields();
+      await api.resetUserPassword(activeUserId, vals.new_password);
+      message.success("密码已重置");
+      setShowResetModal(false);
+      resetForm.resetFields();
+    } catch (err: any) {
+      if (err?.errorFields) return;
+      message.error(err.response?.data?.detail || "重置失败");
+    }
+  };
+
   return (
     <div>
       {/* ── 页面头部 ── */}
@@ -189,7 +221,9 @@ const UserManagePage: React.FC = () => {
               </div>
               <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
                 <Tag
-                  color={user.role === "admin" ? "blue" : "default"}
+                  color={
+                    { super_admin: "gold", admin: "blue", user: "default" }[user.role]
+                  }
                   style={{ fontSize: 10, margin: 0 }}
                 >
                   {user.role}
@@ -244,10 +278,7 @@ const UserManagePage: React.FC = () => {
                 rules={[{ required: true, message: "请选择角色" }]}
               >
                 <Select
-                  options={[
-                    { value: "admin", label: "管理员 (admin)" },
-                    { value: "user", label: "普通用户 (user)" },
-                  ]}
+                  options={roleOptions}
                   style={{ width: 200 }}
                 />
               </Form.Item>
@@ -300,6 +331,12 @@ const UserManagePage: React.FC = () => {
             </Form>
 
             {/* 删除按钮 */}
+            <Button
+              onClick={() => setShowResetModal(true)}
+              style={{ marginRight: 8 }}
+            >
+              重置密码
+            </Button>
             <Popconfirm
               title="确认删除用户?"
               description="此操作不可恢复"
@@ -351,10 +388,11 @@ const UserManagePage: React.FC = () => {
             label="密码"
             rules={[
               { required: true, message: "请输入密码" },
-              { min: 6, message: "密码至少6位" },
+              { min: PASSWORD_MIN_LENGTH, message: `密码至少 ${PASSWORD_MIN_LENGTH} 位` },
+              { pattern: /^(?=.*[A-Za-z])(?=.*\d).+$/, message: "密码必须包含字母和数字" },
             ]}
           >
-            <Input.Password placeholder="至少6位" />
+            <Input.Password placeholder="至少 8 位, 字母+数字" />
           </Form.Item>
 
           <Form.Item
@@ -363,12 +401,34 @@ const UserManagePage: React.FC = () => {
             initialValue="user"
             rules={[{ required: true, message: "请选择角色" }]}
           >
-            <Select
-              options={[
-                { value: "user", label: "普通用户 (user)" },
-                { value: "admin", label: "管理员 (admin)" },
-              ]}
-            />
+            <Select options={roleOptions} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* ── 重置密码 Modal ── */}
+      <Modal
+        title="重置密码"
+        open={showResetModal}
+        onOk={handleReset}
+        onCancel={() => {
+          setShowResetModal(false);
+          resetForm.resetFields();
+        }}
+        okText="重置"
+        cancelText="取消"
+      >
+        <Form form={resetForm} layout="vertical">
+          <Form.Item
+            name="new_password"
+            label="新密码"
+            rules={[
+              { required: true, message: "请输入新密码" },
+              { min: PASSWORD_MIN_LENGTH, message: `密码至少 ${PASSWORD_MIN_LENGTH} 位` },
+              { pattern: /^(?=.*[A-Za-z])(?=.*\d).+$/, message: "密码必须包含字母和数字" },
+            ]}
+          >
+            <Input.Password placeholder="至少 8 位, 字母+数字" />
           </Form.Item>
         </Form>
       </Modal>

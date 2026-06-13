@@ -15,7 +15,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.api.namespace import _compute_confirm_token, router
-from app.auth import require_admin
+from app.auth import get_current_user
 from app.config import settings
 from app.db.metadata import get_db
 from app.models.knowledge_entry import KnowledgeEntry
@@ -33,7 +33,7 @@ async def admin_user(db_session) -> User:
     user = User(
         username="admin_test",
         password_hash="x",
-        role="admin",
+        role="super_admin",
         is_active=True,
     )
     db_session.add(user)
@@ -54,7 +54,7 @@ async def client(
         yield db_session
 
     app.dependency_overrides[get_db] = _override_db
-    app.dependency_overrides[require_admin] = lambda: admin_user
+    app.dependency_overrides[get_current_user] = lambda: admin_user
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

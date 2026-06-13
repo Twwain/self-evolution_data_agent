@@ -6,7 +6,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
-from app.auth import get_current_user, require_admin
+from app.auth import get_current_user
 from app.db.metadata import get_db
 from app.engine.agent_loop import AgentResult
 from app.main import app
@@ -17,7 +17,7 @@ def override_deps(db_session, admin_user):
     async def _fake_db():
         yield db_session
     app.dependency_overrides[get_current_user] = lambda: admin_user
-    app.dependency_overrides[require_admin] = lambda: admin_user
+    app.dependency_overrides[get_current_user] = lambda: admin_user
     app.dependency_overrides[get_db] = _fake_db
     yield
     app.dependency_overrides.clear()

@@ -28,7 +28,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_admin
+from app.auth import require_ns_manage
 from app.db.metadata import get_db
 from app.models.knowledge_audit_log import KnowledgeAuditLog
 from app.models.knowledge_entry import KnowledgeEntry
@@ -59,7 +59,7 @@ async def list_conflicts(
     ns_id: int,
     status: str = "open",
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_admin),
+    actor: User = Depends(require_ns_manage),
 ) -> dict:
     """List terminology conflicts under a namespace, default status='open'.
 
@@ -257,7 +257,7 @@ async def resolve_conflict(
     cid: int,
     body: ResolveBody,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(require_admin),
+    actor: User = Depends(require_ns_manage),
 ) -> dict:
     conflict = (await db.execute(
         select(TerminologyConflict).where(

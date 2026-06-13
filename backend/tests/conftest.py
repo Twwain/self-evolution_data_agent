@@ -80,25 +80,41 @@ async def db(_engine):
 
 
 @pytest_asyncio.fixture
-async def admin_client(db):
-    """ASGI client 自动以假 admin 身份认证, 复用测试 db 会话"""
+async def make_client(db):
+    """按角色构造 ASGI client (override get_current_user + get_db)。
+    所有上层依赖 (require_admin_or_above / require_ns_manage / require_ns_access)
+    基于注入的真实 User 对象走真实判定, 不被 override 短路。
+    用法: client = await make_client(role="admin", user_id=7)
+    """
     from httpx import AsyncClient, ASGITransport
-
     from app.main import app
-    from app.auth import get_current_user, require_admin
+    from app.auth import get_current_user
     from app.db.metadata import get_db
     from app.models.user import User
 
-    async def _fake_admin():
-        return User(id=1, username="admin", role="admin", password_hash="x")
+    created = []
 
-    async def _fake_db():
-        yield db
+    async def _factory(role: str = "super_admin", user_id: int = 1, username: str = "admin"):
+        async def _fake_user():
+            return User(id=user_id, username=username, role=role, password_hash="x")
 
-    app.dependency_overrides[require_admin] = _fake_admin
-    app.dependency_overrides[get_current_user] = _fake_admin
-    app.dependency_overrides[get_db] = _fake_db
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
+        async def _fake_db():
+            yield db
+
+        app.dependency_overrides[get_current_user] = _fake_user
+        app.dependency_overrides[get_db] = _fake_db
+        transport = ASGITransport(app=app)
+        client = AsyncClient(transport=transport, base_url="http://test")
+        created.append(client)
+        return client
+
+    yield _factory
+    for c in created:
+        await c.aclose()
     app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def admin_client(make_client):
+    """向后兼容: 默认 super_admin 身份 client (旧测试沿用)。"""
+    return await make_client(role="super_admin", user_id=1, username="admin")

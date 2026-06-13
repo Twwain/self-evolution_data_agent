@@ -8,7 +8,7 @@ from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.engine.agent_loop import AgentResult
 from app.engine.sse_manager import register_sse_session, deregister_sse_session
-from app.auth import get_current_user, require_admin
+from app.auth import get_current_user
 from app.db.metadata import get_db
 
 
@@ -18,7 +18,7 @@ def override_deps(db_session, admin_user):
         yield db_session
 
     app.dependency_overrides[get_current_user] = lambda: admin_user
-    app.dependency_overrides[require_admin] = lambda: admin_user
+    app.dependency_overrides[get_current_user] = lambda: admin_user
     app.dependency_overrides[get_db] = _fake_db
     yield
     app.dependency_overrides.clear()

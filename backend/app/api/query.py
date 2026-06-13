@@ -15,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user, require_admin
+from app.auth import assert_ns_access, get_current_user, require_admin_or_above
 from app.config import settings
 from app.db.metadata import async_session as _new_db_session
 from app.db.metadata import get_db
@@ -233,6 +233,7 @@ async def query_stream(
     ns = await db.get(Namespace, body.namespace_id)
     if not ns:
         raise HTTPException(404, "命名空间不存在")
+    await assert_ns_access(db, user, ns.id)
 
     # trace_id: 每次执行新生成 (落 agent_traces, 唯一约束); 取消重发/重试都是新 trace。
     # session_id: 会话级稳定标识 (前端传则用), 用于多轮历史 / 按会话聚合。
@@ -574,7 +575,7 @@ async def submit_clarify_response(
 
 
 @router.get("/query/active_workers")
-async def list_active_workers(user: User = Depends(require_admin)):
+async def list_active_workers(user: User = Depends(require_admin_or_above)):
     """Admin 查看活跃 SSE trace (单进程 dict, 不跨 worker 共享)."""
     ids = list_active_trace_ids()
     return {"trace_ids": ids, "count": len(ids)}

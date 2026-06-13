@@ -171,18 +171,18 @@ async def fn_session(fn_engine):
 
 @pytest_asyncio.fixture
 async def fn_admin_client(fn_session):
-    from app.auth import get_current_user, require_admin
+    from app.auth import get_current_user
     from app.db.metadata import get_db
     from app.main import app
     from app.models.user import User
 
     async def _fake_admin():
-        return User(id=1, username="admin", role="admin", password_hash="x")
+        return User(id=1, username="admin", role="super_admin", password_hash="x")
 
     async def _fake_db():
         yield fn_session
 
-    app.dependency_overrides[require_admin] = _fake_admin
+    app.dependency_overrides[get_current_user] = _fake_admin
     app.dependency_overrides[get_current_user] = _fake_admin
     app.dependency_overrides[get_db] = _fake_db
     transport = ASGITransport(app=app)

@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user, require_admin
+from app.auth import assert_ns_access, require_admin_or_above
 from app.config import settings
 from app.db.metadata import get_db
 from app.knowledge.canonical_audit import write_canonical_audit_log
@@ -73,10 +73,11 @@ async def list_enum_dictionaries(
     namespace_id: int = Query(..., gt=0),
     source: str = Query("all"),
     name_like: str | None = Query(None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ) -> _ListResponse:
     """列表 + reference_count."""
+    await assert_ns_access(db, user, namespace_id)
     q = select(EnumDictionary).where(EnumDictionary.namespace_id == namespace_id)
     if source != "all":
         q = q.where(EnumDictionary.source == source)
@@ -96,10 +97,11 @@ async def list_enum_dictionaries(
 @router.post("", response_model=_CreateResponse, status_code=201)
 async def create_enum_dictionary(
     body: EnumDictionaryCreate,
-    user: User = Depends(require_admin),
+    user: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ) -> _CreateResponse:
     """创建 manual enum, 409 on duplicate."""
+    await assert_ns_access(db, user, body.namespace_id)
     existing = (await db.execute(
         select(EnumDictionary).where(
             EnumDictionary.namespace_id == body.namespace_id,
@@ -138,13 +140,14 @@ async def create_enum_dictionary(
 async def update_enum_dictionary(
     enum_id: int,
     body: EnumDictionaryUpdate,
-    user: User = Depends(require_admin),
+    user: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ) -> EnumDictionaryResponse:
     """编辑 values/comment, source='code' 自动转 'manual'."""
     row = await db.get(EnumDictionary, enum_id)
     if not row:
         raise HTTPException(404, "enum dictionary not found")
+    await assert_ns_access(db, user, row.namespace_id)
 
     if body.values is not None:
         row.values_json = json.dumps(
@@ -172,13 +175,14 @@ async def delete_enum_dictionary(
     enum_id: int,
     dry_run: bool = Query(True),
     confirm_token: str | None = Query(None),
-    user: User = Depends(require_admin),
+    user: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """删除 enum dictionary, dry_run + confirm_token pattern."""
     row = await db.get(EnumDictionary, enum_id)
     if not row:
         raise HTTPException(404, "enum dictionary not found")
+    await assert_ns_access(db, user, row.namespace_id)
 
     affected = await _find_affected_fields(db, row.namespace_id, enum_id)
 
@@ -227,13 +231,14 @@ async def delete_enum_dictionary(
 @router.get("/{enum_id}/references", response_model=_ReferencesResponse)
 async def get_references(
     enum_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin_or_above),
     db: AsyncSession = Depends(get_db),
 ) -> _ReferencesResponse:
     """反向扫 fields_json 找 enum_ref_id == id."""
     row = await db.get(EnumDictionary, enum_id)
     if not row:
         raise HTTPException(404, "enum dictionary not found")
+    await assert_ns_access(db, user, row.namespace_id)
 
     items = await _find_reference_items(db, row.namespace_id, enum_id)
     return _ReferencesResponse(items=items, total=len(items))
