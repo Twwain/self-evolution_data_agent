@@ -113,13 +113,6 @@ const Layout: React.FC = () => {
           <Button
             type="text"
             size="small"
-            onClick={() => navigate("/profile")}
-          >
-            修改密码
-          </Button>
-          <Button
-            type="text"
-            size="small"
             icon={<LogoutOutlined />}
             onClick={handleLogout}
           >
