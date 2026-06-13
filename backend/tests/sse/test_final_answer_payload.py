@@ -48,20 +48,25 @@ class TestExtractFromToolTrace:
         result = _extract_from_tool_trace(trace, EXEC_TOOLS, ("rows", "columns"))
         assert result == {"rows": [{"b": 2}], "columns": ["b"]}
 
-    def test_extract_chart_type_from_recommend_chart(self):
+    def test_extract_chart_type_from_present_result(self):
         trace = [
             {"name": "execute_query", "status": "ok",
              "input": {}, "output": {"rows": [], "columns": []}},
-            {"name": "recommend_chart", "status": "ok",
-             "input": {}, "output": {"chart_type": "bar", "config": {}}},
+            {"name": "present_result", "status": "ok",
+             "input": {}, "output": {"status": "ok", "ref": "c1",
+                                      "chart_spec": {"chart_type": "bar"}}},
         ]
-        result = _extract_from_tool_trace(trace, CHART_TOOLS, ("chart_type",))
-        assert result == {"chart_type": "bar"}
+        # present_result 的 chart_type 埋在 chart_spec; _resolve_present_result (Stage 3)
+        # 负责反查渲染, 此处仅验证 CHART_TOOLS 常量在抽取路径可用.
+        result = _extract_from_tool_trace(trace, CHART_TOOLS, ("chart_spec",))
+        assert result.get("chart_spec", {}).get("chart_type") == "bar"
 
     def test_exec_tools_constant_includes_new_tools(self):
         assert "execute_query" in EXEC_TOOLS
         assert "execute_plan" in EXEC_TOOLS
         assert len(EXEC_TOOLS) == 2
 
-    def test_chart_tools_constant_includes_recommend(self):
-        assert "recommend_chart" in CHART_TOOLS
+    def test_chart_tools_constant_includes_present_result(self):
+        from app.engine.tools.registry import CHART_TOOLS
+        assert "present_result" in CHART_TOOLS
+        assert "recommend_chart" not in CHART_TOOLS

@@ -18,7 +18,7 @@ DECISIVE: frozenset[str] = frozenset({
     "execute_query",
     "generate_query_plan",
     "execute_plan",
-    "recommend_chart",
+    "present_result",
 })
 """决策类 — 直接产出最终结果或图表选型."""
 

@@ -54,6 +54,9 @@ export interface AgentStreamState {
     chartType?: string;
     chartOption?: Record<string, unknown>;
     categoryColumn?: string;
+    truncated?: boolean;
+    renderedRowCount?: number;
+    totalRowCount?: number;
   } | null;
 }
 
@@ -221,6 +224,9 @@ export function agentStreamReducer(state: AgentStreamState, action: Action): Age
           chartType: ev.data.chart_type,
           chartOption: ev.data.chart_option,
           categoryColumn: ev.data.category_column,
+          truncated: ev.data.truncated,
+          renderedRowCount: ev.data.rendered_row_count,
+          totalRowCount: ev.data.total_row_count,
         },
       };
     default:

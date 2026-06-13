@@ -13,10 +13,10 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
-import pandas as pd
 from langfuse import observe
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.engine.drivers import get_driver
 from app.engine.plan_executor import execute_plan
 from app.engine.plan_generator import generate_plan
@@ -25,7 +25,7 @@ from app.engine.plan_models import (
     QueryPlan,
 )
 from app.engine.tools._resolve_ds import resolve_ds
-from app.engine.visualizer import recommend_chart
+from app.engine.visualizer import _VALID_CHART_TYPES
 
 from ._mongo_helpers import record_span_io
 
@@ -181,7 +181,15 @@ async def execute_plan_tool(
         "rows": rows,
         "columns": columns,
         "last_step_idx": getattr(result, "last_step_idx", 0),
+        "truncated": getattr(result, "final_truncated", False),
+        "rendered_row_count": len(rows),
+        "total_row_count": getattr(result, "final_total_row_count", len(rows)),
     }
+    if out["truncated"]:
+        out["suggestion"] = (
+            f"结果共 {out['total_row_count']} 行, 超渲染上限 {settings.render_row_limit} 行已截断; "
+            "若用于图表请改用更粗聚合粒度 (如按日→按月) 或缩小范围后重试, 不要分多次查询拼接."
+        )
     record_span_io(
         input={
             "namespace_id": namespace_id,
@@ -198,34 +206,32 @@ async def execute_plan_tool(
 
 
 # ════════════════════════════════════════════
-#  Tool 3: recommend_chart_tool
-#  (sync, recommend_chart 本身就是 sync)
+#  Tool 3: present_result_tool (声明最终结果集 + 图表列角色)
+#  反转自 recommend_chart: 不收 rows 数组, 只收 ref(指针) + chart_spec(列角色).
+#  工具内 tool_trace 不可见 → 只校验+回显; 渲染在 api finalization 按 ref 取全量数据.
 # ════════════════════════════════════════════
 
-@observe(name="tool.recommend_chart")
-def recommend_chart_tool(*, rows: list[dict], columns: list[str], category_column: str = "") -> dict:
-    """启发式图表推荐. 空结果落 table, 不进 visualizer."""
-    if not rows:
-        return {"chart_type": "table", "config": {}, "category_column": ""}
-    # 校验 columns 是否与 rows keys 匹配，不匹配则 fallback 到 dict keys
-    actual_keys = set(rows[0].keys())
-    # 确保 category_column 在 DataFrame 中（LLM 可能没把它放进 columns）
-    use_columns: list[str] | None = None
-    if columns and set(columns) <= actual_keys:
-        use_columns = list(columns)
-        if category_column and category_column in actual_keys and category_column not in use_columns:
-            use_columns.append(category_column)
-    if use_columns:
-        df = pd.DataFrame(rows, columns=use_columns)
-    else:
-        df = pd.DataFrame(rows)
-    # 校验 category_column 有效性
-    if category_column and category_column not in actual_keys:
-        category_column = ""
-    chart_type, config = recommend_chart(df, category_column=category_column)
-    out = {"chart_type": chart_type, "config": config, "category_column": category_column}
+@observe(name="tool.present_result")
+def present_result_tool(*, ref: str, chart_spec: dict) -> dict:
+    """声明哪次执行(ref)是最终结果集 + 图表列角色(chart_spec). 不收数据行."""
+    if not ref or not isinstance(ref, str):
+        return {
+            "status": "error", "error_type": "BadRef",
+            "error_message": "ref 必须是指向某次 execute_query/execute_plan 的 tool_call_id",
+            "suggested_next_step": (
+                "检查 ref 是否指向一次成功的 execute_query/execute_plan 调用; "
+                "无成功执行则用文字向用户说明查询未完成"
+            ),
+        }
+    spec = dict(chart_spec or {})
+    ct = spec.get("chart_type")
+    if ct not in _VALID_CHART_TYPES:
+        spec["chart_type"] = "table"  # 归一化, 与渲染端 fail-safe 一致
+    out = {"status": "ok", "ref": ref, "chart_spec": spec}
     record_span_io(
-        input={"row_count": len(rows), "column_count": len(use_columns or list(actual_keys)), "category_column": category_column},
-        output={"chart_type": chart_type},
+        input={"ref": ref, "chart_type": spec.get("chart_type"),
+               "x": spec.get("x", ""), "series_by": spec.get("series_by", ""),
+               "value": spec.get("value", "")},
+        output={"status": "ok"},
     )
     return out

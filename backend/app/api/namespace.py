@@ -130,6 +130,7 @@ async def delete_namespace(
         dry_run=True,
         actor_id=admin.id,
         reason=f"namespace delete ns_id={ns_id}",
+        full_purge=True,
     )
     preview = await preview_guard.preview(db)
     expected_token = _compute_confirm_token(ns_id, preview.affected_count)
@@ -181,6 +182,7 @@ async def delete_namespace(
         dry_run=False,
         actor_id=admin.id,
         reason=f"namespace delete ns_id={ns_id} confirmed",
+        full_purge=True,
     )
     await real_guard.execute(db, slug=ns.slug)
 
@@ -191,8 +193,19 @@ async def delete_namespace(
     from app.knowledge.terminology_automaton import invalidate
     await invalidate(ns.id)
 
+    # ── driver 连接池清理: CASCADE 删 datasources 行前先收集 ds_id,
+    #    删除后逐个 evict, 防连接池/客户端残留持有 TCP 连接 ──
+    ds_ids = list(
+        (await db.scalars(select(DataSource.id).where(DataSource.namespace_id == ns_id))).all()
+    )
+
     await db.delete(ns)
     await db.commit()
+
+    from app.engine.drivers import evict_datasource
+    for did in ds_ids:
+        await evict_datasource(did)
+
     return Response(status_code=204)
 
 
@@ -391,6 +404,10 @@ async def delete_datasource(
     await cleanup_scos_for_datasource(db, ds)
     await db.delete(ds)
     await db.commit()
+
+    # driver 连接池清理: 防 ds 删除后 pool/client 残留持有 TCP 连接
+    from app.engine.drivers import evict_datasource
+    await evict_datasource(ds_id)
 
 
 # ════════════════════════════════════════════

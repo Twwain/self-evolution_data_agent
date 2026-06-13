@@ -131,6 +131,10 @@ LLMCallable = Callable[..., Awaitable[ToolUseResponse]]
 SSEEmit = Callable[[dict], Awaitable[None]]
 ToolFn = Callable[..., Awaitable[Any]]
 
+# 结果可被 present_result.ref 引用的数据型工具: 其输出注入 result_ref(=tool_call_id)
+# 供 LLM 复述, 避免要求它复述不透明 tool_call_id (实证: 模型会编造).
+_REFERENCEABLE_TOOLS: frozenset[str] = frozenset({"execute_query", "execute_plan"})
+
 
 @dataclass
 class AgentResult:
@@ -401,7 +405,12 @@ async def run_agent_loop(
 
             # ── 喂回 + emit tool_result ──
             for tc, res in zip(response.tool_calls, results):
-                tool_trace.append({"name": tc.name, "input": tc.input,
+                # 让 LLM 能从结果里读到可复述的 ref (present_result.ref 用它), 而非
+                # 要求它复述不透明的 tool_call_id (实证: 模型会编造假 id). result_ref
+                # 与 tool_trace 项的 id 一致, 使 finalization 按 ref 反查命中.
+                if tc.name in _REFERENCEABLE_TOOLS and isinstance(res.get("output"), dict):
+                    res["output"].setdefault("result_ref", tc.id)
+                tool_trace.append({"id": tc.id, "name": tc.name, "input": tc.input,
                                     "output": res["output"], "status": res["status"]})
                 await sse_emit({
                     "event": "tool_result",

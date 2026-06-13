@@ -142,7 +142,7 @@ async def test_native_caps_mongodb_step_passes_through_to_driver():
         strategy="single_aggregate",
         steps=[_step(idx=1, op="aggregate", pipeline=[{"$match": {"status": "active"}}])],
     )
-    mongo_driver_path = AsyncMock(return_value=[{"_id": "a"}])
+    mongo_driver_path = AsyncMock(return_value=([{"_id": "a"}], False, 1))
     with patch("app.engine.plan_executor._resolve_step_caps",
                new=AsyncMock(return_value=_native_caps())), \
          patch("app.engine.plan_executor._execute_mongo_step", new=mongo_driver_path):
@@ -159,7 +159,7 @@ async def test_caps_none_mongodb_step_passes_through_to_driver():
         strategy="single_aggregate",
         steps=[_step(idx=1, op="aggregate", pipeline=[{"$project": {"x": "$a.$id_str"}}])],
     )
-    mongo_driver_path = AsyncMock(return_value=[{"_id": "a"}])
+    mongo_driver_path = AsyncMock(return_value=([{"_id": "a"}], False, 1))
     with patch("app.engine.plan_executor._resolve_step_caps",
                new=AsyncMock(return_value=None)), \
          patch("app.engine.plan_executor._execute_mongo_step", new=mongo_driver_path):
@@ -182,7 +182,7 @@ async def test_mysql_step_skips_pre_validation_and_passes_through_to_driver():
                      query={"sql": "SELECT COUNT(*) AS n FROM t LIMIT 100"})],
     )
     resolve_caps = AsyncMock(return_value=_documentdb_caps())
-    mysql_driver_path = AsyncMock(return_value=[{"n": 5}])
+    mysql_driver_path = AsyncMock(return_value=([{"n": 5}], False, 1))
     with patch("app.engine.plan_executor._resolve_step_caps", new=resolve_caps), \
          patch("app.engine.plan_executor._execute_mysql_step", new=mysql_driver_path):
         result = await execute_plan(plan, slug="ns", ns_id=1)

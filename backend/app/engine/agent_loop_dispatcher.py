@@ -7,7 +7,7 @@ before invocation — these are NOT LLM-visible.
 设计要点:
 - inspect 每个 tool 签名, 仅注入 fn 接收的 ctx kwarg, 不接收的丢弃, 避 TypeError.
 - LLM 给的 kwargs 优先级高于 ctx (LLM 不应传, 防御性 merge).
-- 同时支持 async / sync tool — recommend_chart_tool 是同步, 用 inspect.isawaitable 兼容.
+- 同时支持 async / sync tool — present_result_tool 是同步, 用 inspect.isawaitable 兼容.
 - datasource_id 不再注入: mongo 工具按 (ns_id, database) 反查 ds, 不绑死单 ds.
 """
 from __future__ import annotations

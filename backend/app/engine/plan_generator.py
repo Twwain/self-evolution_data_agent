@@ -67,6 +67,12 @@ Goal: 产出一个合法 Plan — 每步绑定一个 (db_type, database, collect
 每步在 "exports" 声明要传给后续步骤的字段名.
 </step_shape>
 
+<humanize>
+展示列输出可读名不输出编码: 某列存编码 (状态码/分类id/外键id) 且 schema 有可读来源时,
+生成查询就翻译 — 有维表则 JOIN 取 label 列; 无维表但 rules/knowledge 给了枚举语义则 CASE WHEN 翻.
+找不到可读来源则保留原列 (渲染端 code_label_map 兜底).
+</humanize>
+
 <capability_constraints>
 某集合下方若附【能力限制】块, 说明该集合所在数据源不支持其中列出的算子 / stage 形态 / 语法约束 (没有该块的集合不受限制, 按通用 MongoDB 语法构造即可).
 为该集合构造 pipeline 时, 先比对【能力限制】列出的三类项:

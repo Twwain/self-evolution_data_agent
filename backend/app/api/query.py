@@ -43,6 +43,7 @@ from app.engine.tools.registry import (
     TOOL_TARGET_FIELD,
     build_system_prompt,
 )
+from app.engine.visualizer import render_chart
 from app.knowledge.trace_extractor import (
     derive_cost_strategy as _derive_cost_strategy_impl,
     extract_collections as _extract_collections_impl,
@@ -290,26 +291,31 @@ async def query_stream(
                 "history_id": history_id,
                 "stop_reason": result.stop_reason,
             }
-            # 优先从 recommend_chart 的 input.rows 取数据（LLM 已做人类可读加工），
-            # fallback 到 execute_query 的 output.rows（原始数据库返回）
-            chart_input_rows = _extract_chart_input_rows(result.tool_trace)
-            if chart_input_rows:
-                final_data["rows"] = chart_input_rows
+            # Stage 3: present_result 显式 ref → 反查全量 rows + 确定性渲染.
+            presented = _resolve_present_result(result.tool_trace)
+            if presented:
+                final_data["rows"] = presented["rows"]
+                final_data["columns"] = presented["columns"]
+                final_data["chart_type"] = presented["chart_type"]
+                final_data["chart_option"] = presented["chart_option"]
+                final_data["category_column"] = presented["category_column"]
+                final_data["truncated"] = presented["truncated"]  # §4.6 显式透传
+                final_data["rendered_row_count"] = presented["rendered_row_count"]
+                final_data["total_row_count"] = presented["total_row_count"]
             else:
-                final_data.update(
-                    _extract_from_tool_trace(result.tool_trace, EXEC_TOOLS, ("rows",))
-                )
-            # columns 不在 execute_query output 中，从 rows[0] 推断
-            if "rows" in final_data and final_data["rows"]:
-                first = final_data["rows"][0]
-                if isinstance(first, dict):
-                    final_data["columns"] = list(first.keys())
-            chart_extracted = _extract_from_tool_trace(
-                result.tool_trace, CHART_TOOLS, ("chart_type", "config", "category_column"),
-            )
-            if "config" in chart_extracted:
-                chart_extracted["chart_option"] = chart_extracted.pop("config")
-            final_data.update(chart_extracted)
+                # 无 present_result (LLM 未收尾): 退化取最后一次 execute_query 原始 rows, 表格展示.
+                fallback = _extract_from_tool_trace(result.tool_trace, EXEC_TOOLS, ("rows",))
+                if fallback.get("rows"):
+                    final_data["rows"] = fallback["rows"]
+                    first = fallback["rows"][0]
+                    if isinstance(first, dict):
+                        final_data["columns"] = list(first.keys())
+                    final_data["chart_type"] = "table"
+                final_data.setdefault("chart_option", {})
+                final_data.setdefault("category_column", "")
+                final_data.setdefault("truncated", False)
+                final_data.setdefault("rendered_row_count", len(final_data.get("rows", [])))
+                final_data.setdefault("total_row_count", len(final_data.get("rows", [])))
             await event_q.put({
                 "event": "final_answer",
                 "data": final_data,
@@ -376,24 +382,53 @@ def _extract_from_tool_trace(
     return {f: last["output"][f] for f in fields if f in last["output"]}
 
 
-def _extract_chart_input_rows(trace: list[dict]) -> list[dict] | None:
-    """从最后一个成功的 recommend_chart 的 input.rows 取 LLM 加工后的数据.
+def _resolve_present_result(trace: list[dict]) -> dict | None:
+    """找最后一个成功 present_result → 按 ref 反查目标执行的完整 rows → render_chart.
 
-    LLM 在调用 recommend_chart 时通常会对 execute_query 的原始结果做人类可读加工
-    （如将数字编码翻译为中文名称），这些加工后的 rows 更适合展示给用户。
+    返回 {rows, columns, chart_type, chart_option, category_column,
+          truncated, rendered_row_count, total_row_count} 或 None (无 present_result).
+    ref 失效时渲染端 fail-safe (render_chart 对空 rows 返回 table).
+    truncated/total_row_count 取自目标执行 output (render mode 疑似截断时由 executor
+    补 count 填精确总数), 全程透传不静默 (§4.6).
     """
-    last = next(
+    pr = next(
         (tr for tr in reversed(trace)
-         if tr["name"] in CHART_TOOLS and tr["status"] == "ok"),
+         if tr.get("name") == "present_result" and tr.get("status") == "ok"),
         None,
     )
-    if not last:
+    if not pr:
         return None
-    inp = last.get("input") or {}
-    rows = inp.get("rows")
-    if isinstance(rows, list) and rows:
-        return rows
-    return None
+    out = pr.get("output") or {}
+    ref = out.get("ref")
+    chart_spec = out.get("chart_spec") or {}
+    # 按 ref 反查目标执行的完整 rows + truncated
+    target = next(
+        (tr for tr in trace if tr.get("id") == ref and tr.get("status") == "ok"), None,
+    )
+    rows: list[dict] = []
+    truncated = False
+    total_row_count = 0
+    if target:
+        target_out = target.get("output") or {}
+        if not isinstance(target_out, dict):
+            target_out = {}
+        raw_rows = target_out.get("rows")
+        # 畸形 output (rows 非 list) 退化为空, 不抛
+        rows = list(raw_rows) if isinstance(raw_rows, list) else []
+        truncated = bool(target_out.get("truncated"))
+        total_row_count = int(target_out.get("total_row_count") or len(rows))
+    chart_type, chart_option = render_chart(rows, chart_spec)
+    columns = list(rows[0].keys()) if rows and isinstance(rows[0], dict) else []
+    return {
+        "rows": rows,
+        "columns": columns,
+        "chart_type": chart_type,
+        "chart_option": chart_option,
+        "category_column": chart_spec.get("x", ""),  # 兼容旧前端字段
+        "truncated": truncated,                       # §4.6 截断显式透传
+        "rendered_row_count": len(rows),
+        "total_row_count": total_row_count,           # 截断时为补 count 的精确总数
+    }
 
 
 async def _write_query_history(
@@ -413,19 +448,29 @@ async def _write_query_history(
             row_count = int(out.get("row_count", 0) or out.get("count", 0) or 0)
             break
 
-    # Extract rows/columns/chart_type from tool_trace for full snapshot
-    # 优先从 recommend_chart input 取 LLM 加工后的 rows
-    chart_input_rows = _extract_chart_input_rows(result.tool_trace)
-    if chart_input_rows:
-        rows_data = chart_input_rows
-        columns_data = list(chart_input_rows[0].keys()) if chart_input_rows else []
+    # Stage 3: history 快照存渲染器产出的【完整 rows】+ chart_option (非 LLM 手抄).
+    presented = _resolve_present_result(result.tool_trace)
+    if presented:
+        rows_data = presented["rows"]
+        columns_data = presented["columns"]
+        chart_type_data = presented["chart_type"]
+        chart_option_data = presented["chart_option"]
+        category_column_data = presented["category_column"]
+        truncated_data = presented["truncated"]
+        rendered_row_count_data = presented["rendered_row_count"]
+        total_row_count_data = presented["total_row_count"]
     else:
         exec_data = _extract_from_tool_trace(result.tool_trace, EXEC_TOOLS, ("rows", "columns"))
-        columns_data = exec_data.get("columns", [])
         rows_data = exec_data.get("rows", [])
-    chart_data = _extract_from_tool_trace(result.tool_trace, CHART_TOOLS, ("chart_type", "category_column"))
-    chart_type_data = chart_data.get("chart_type", "table")
-    category_column_data = chart_data.get("category_column", "")
+        columns_data = exec_data.get("columns", []) or (
+            list(rows_data[0].keys()) if rows_data and isinstance(rows_data[0], dict) else []
+        )
+        chart_type_data = "table"
+        chart_option_data = {}
+        category_column_data = ""
+        truncated_data = False
+        rendered_row_count_data = len(rows_data)
+        total_row_count_data = len(rows_data)
 
     async with _new_db_session() as db:
         entry = QueryHistory(
@@ -447,7 +492,10 @@ async def _write_query_history(
                 "row_count": row_count,
                 "chart_type": chart_type_data,
                 "category_column": category_column_data,
-                "chart_option": {},
+                "chart_option": chart_option_data,
+                "truncated": truncated_data,
+                "rendered_row_count": rendered_row_count_data,
+                "total_row_count": total_row_count_data,
                 "performance_warning": "",
                 "error": "" if result.stop_reason == "end_turn" else result.stop_reason,
                 "clarification_questions": [],
@@ -867,7 +915,10 @@ def _extract_rows_chart(result: AgentResult) -> tuple[int, str]:
             if count and rows_count == 0:
                 rows_count = count
         if name in CHART_TOOLS:
-            ct = out.get("chart_type")
+            # present_result: chart_type 埋在 chart_spec; 兼容旧 recommend_chart 顶层 chart_type
+            spec = out.get("chart_spec")
+            ct = spec.get("chart_type") if isinstance(spec, dict) else None
+            ct = ct or out.get("chart_type")
             if ct:
                 chart_type = ct
     return rows_count, chart_type

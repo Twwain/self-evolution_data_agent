@@ -134,50 +134,117 @@ async def test_execute_plan_returns_rows_and_columns():
 
 
 # ════════════════════════════════════════════
-#  recommend_chart_tool
+#  present_result_tool (反转自 recommend_chart_tool)
 # ════════════════════════════════════════════
 
-def test_recommend_chart_card_for_single_value():
-    """单行单值 → card / 类似. 不强断具体类型, 只验合约."""
-    from app.engine.tools.plan_tools import recommend_chart_tool
-    out = recommend_chart_tool(rows=[{"count": 42}], columns=["count"])
-    assert "chart_type" in out
-    assert "config" in out
-    assert isinstance(out["chart_type"], str)
-    assert isinstance(out["config"], dict)
-
-
-def test_recommend_chart_handles_empty_rows():
-    """空结果不应崩溃, 落 table."""
-    from app.engine.tools.plan_tools import recommend_chart_tool
-    out = recommend_chart_tool(rows=[], columns=[])
-    assert "chart_type" in out
-    assert out["chart_type"] == "table"
-
-
-def test_recommend_chart_multi_category_falls_back_to_table():
-    """≥2 个分类维度 (brand × itemType) → 2D 图无法无损表达, 落 table.
-
-    回归锁定: trace 7270955a — LLM 传 category_column='brandName' 时仍须落表,
-    守卫必须置于 category_column 分支之前.
-    """
-    from app.engine.tools.plan_tools import recommend_chart_tool
-    rows = [
-        {"brandName": "优选 A 级标准版", "itemTypeName": "条目", "resourceCount": 1019},
-        {"brandName": "优选 A 级标准版", "itemTypeName": "短文", "resourceCount": 28},
-        {"brandName": "优选 B 级标准版", "itemTypeName": "条目", "resourceCount": 500},
-    ]
-    out = recommend_chart_tool(
-        rows=rows,
-        columns=["brandName", "itemTypeName", "resourceCount"],
-        category_column="brandName",
+def test_present_result_echoes_ref_and_spec():
+    from app.engine.tools.plan_tools import present_result_tool
+    out = present_result_tool(
+        ref="call_x",
+        chart_spec={"chart_type": "line", "x": "day", "series_by": "region", "value": "amount"},
     )
-    assert out["chart_type"] == "table"
+    assert out["ref"] == "call_x"
+    assert out["chart_spec"]["chart_type"] == "line"
+    assert out["status"] == "ok"
 
 
-def test_recommend_chart_single_category_still_charts():
-    """单分类维度 + 数值 (name × count) 不应被守卫误伤, 仍出图 (非 table/card)."""
-    from app.engine.tools.plan_tools import recommend_chart_tool
-    rows = [{"name": f"c{i}", "count": i} for i in range(7)]
-    out = recommend_chart_tool(rows=rows, columns=["name", "count"])
-    assert out["chart_type"] not in ("table", "card")
+def test_present_result_rejects_empty_ref():
+    from app.engine.tools.plan_tools import present_result_tool
+    out = present_result_tool(ref="", chart_spec={"chart_type": "table"})
+    assert out["status"] == "error"
+
+
+def test_present_result_normalizes_illegal_chart_type_to_table():
+    from app.engine.tools.plan_tools import present_result_tool
+    out = present_result_tool(ref="call_x", chart_spec={"chart_type": "xxx"})
+    # 非法类型不报错, 归一化为 table (渲染端 fail-safe 一致)
+    assert out["chart_spec"]["chart_type"] == "table"
+
+
+# ════════════════════════════════════════════
+#  Stage 5 — plan 末步 render mode + 补 count 截断纠正
+# ════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_execute_plan_overrides_planner_limit_and_counts_true_total(monkeypatch):
+    """critical: 末步 SQL 带 planner LIMIT 1000, render_row_limit=3.
+    render 跑剥离 planner LIMIT 的查询 → 取 render_row_limit 行; count 跑剥离 LIMIT
+    的查询 → 真实总数 5; truncated = 5>3 = True."""
+    from app.config import settings
+    from app.engine.plan_executor import execute_plan
+    from app.engine.plan_models import PlanStep, QueryPlan
+
+    monkeypatch.setattr(settings, "render_row_limit", 3)
+    captured: list[tuple[str, str]] = []
+
+    class FakeDriver:
+        async def execute_query(self, ds, target, query, mode="single", batch_size=1000):
+            sql = (query or {}).get("sql", "")
+            captured.append((mode, sql))
+            if mode == "render":
+                # 注: render 的 LIMIT 剥离发生在真 driver 的 _wrap_by_mode 内 (此处被 fake
+                # 替换故收到原 SQL); 真 driver 行为由 test_render_mode.py 覆盖.
+                return {"rows": [{"d": i} for i in range(settings.render_row_limit)],
+                        "row_count": settings.render_row_limit, "truncated": True}
+            if mode == "count":
+                assert "LIMIT 1000" not in sql, "count 必须跑剥离 LIMIT 的查询"
+                return {"rows": [{"cnt": 5}], "row_count": 1, "truncated": False}
+            return {"rows": [], "row_count": 0, "truncated": False}
+
+    async def fake_resolve_ds(*a, **k):
+        return object()
+
+    with patch("app.engine.drivers.get_driver", return_value=FakeDriver()), \
+         patch("app.engine.tools._resolve_ds.resolve_ds", fake_resolve_ds):
+        plan = QueryPlan(
+            strategy="single_aggregate",
+            steps=[PlanStep(
+                step_idx=1, database="shop_db", collection="orders", operation="sql",
+                query={"sql": "SELECT d, SUM(v) AS v FROM orders GROUP BY d LIMIT 1000"},
+                pipeline=[], projection={}, sort=[], limit=1000, exports=[], db_type="mysql",
+            )],
+            post_process="", raw_llm_output="",
+        )
+        result = await execute_plan(plan, slug="ns", ns_id=1, sse_emit=None)
+
+    assert result.final_truncated is True
+    assert result.final_total_row_count == 5     # count 真实总数, 非 ≤1000
+    assert len(result.final) == settings.render_row_limit  # render override 到 3
+    assert any(m == "count" for m, _ in captured), "疑似截断必须补 count"
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_exact_limit_not_truncated(monkeypatch):
+    """总数恰好 == limit: len>=limit 疑似, count 算出 total==limit → 纠正 truncated=False."""
+    from app.config import settings
+    from app.engine.plan_executor import execute_plan
+    from app.engine.plan_models import PlanStep, QueryPlan
+
+    monkeypatch.setattr(settings, "render_row_limit", 5)
+
+    class FakeDriver:
+        async def execute_query(self, ds, target, query, mode="single", batch_size=1000):
+            if mode == "render":
+                return {"rows": [{"d": i} for i in range(5)], "row_count": 5, "truncated": True}
+            if mode == "count":
+                return {"rows": [{"cnt": 5}], "row_count": 1, "truncated": False}
+            return {"rows": [], "row_count": 0, "truncated": False}
+
+    async def fake_resolve_ds(*a, **k):
+        return object()
+
+    with patch("app.engine.drivers.get_driver", return_value=FakeDriver()), \
+         patch("app.engine.tools._resolve_ds.resolve_ds", fake_resolve_ds):
+        plan = QueryPlan(
+            strategy="single_aggregate",
+            steps=[PlanStep(
+                step_idx=1, database="d", collection="t", operation="sql",
+                query={"sql": "SELECT a FROM t LIMIT 1000"},
+                pipeline=[], projection={}, sort=[], limit=1000, exports=[], db_type="mysql",
+            )],
+            post_process="", raw_llm_output="",
+        )
+        result = await execute_plan(plan, slug="ns", ns_id=1, sse_emit=None)
+
+    assert result.final_truncated is False   # count 纠正假阳性
+    assert result.final_total_row_count == 5

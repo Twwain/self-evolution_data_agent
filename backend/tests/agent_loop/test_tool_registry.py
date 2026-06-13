@@ -10,7 +10,7 @@ def test_registry_has_all_13_tools():
         "fetch_schema", "inspect_values",
         "estimate_cost", "execute_query",
         "clarify_with_user",
-        "generate_query_plan", "execute_plan", "recommend_chart",
+        "generate_query_plan", "execute_plan", "present_result",
     }
     assert set(REGISTRY.keys()) == expected
     assert {s["name"] for s in TOOL_SPECS} == expected

@@ -1,79 +1,13 @@
 """
-可视化智能推荐
-启发式规则, 不用 LLM 浪费 token — 图表类型是确定性逻辑
+可视化智能推荐 — 确定性渲染器
+图表类型/列角色由 LLM 在 present_result 的 chart_spec 给出; 渲染器只机械拼 option.
+(旧 dtype 启发式 recommend_chart 已于 Stage 2 删除, 反转为 render_chart.)
 """
 
-from typing import Any
+import math
 
+import numpy as np
 import pandas as pd
-
-
-def recommend_chart(
-    df: pd.DataFrame, *, category_column: str = "",
-) -> tuple[str, dict[str, Any]]:
-    """
-    分析 DataFrame 结构, 推荐图表类型 + 生成 ECharts option
-    返回: (chart_type, echarts_option)
-
-    规则:
-    - 单行单值 → card
-    - 1 列时间 + N 列数值 → line
-    - 1 列分类 + 1 列数值 → pie (≤6 unique) / bar (>6)
-    - LLM 指定 category_column 时直接用, 多数值列启发式选 value 列
-    - 其他 → table
-    """
-    if df.empty:
-        return "table", {}
-
-    rows, cols = df.shape
-
-    # ── 单行单值: 数字卡片 ──
-    if rows == 1 and cols == 1:
-        val = df.iloc[0, 0]
-        return "card", {"value": _to_serializable(val), "label": df.columns[0]}
-
-    # ── 单行多值: 也用卡片组 ──
-    if rows == 1 and cols <= 4:
-        cards = [{"label": c, "value": _to_serializable(df.iloc[0][c])} for c in df.columns]
-        return "card", {"cards": cards}
-
-    # ── 分析列类型 ──
-    time_cols = [c for c in df.columns if _is_time_column(df[c])]  # type: ignore[arg-type]
-    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-    cat_cols = [c for c in df.columns if c not in time_cols and c not in num_cols]
-
-    # ── 多分类维度 (≥2 个分类列): 2D 图表 (bar/line/pie) 无法无损表达, 落表格 ──
-    # 必须置于 category_column / 自动检测分支之前: LLM 传 category_column 时会优先
-    # 命中那个分支出 bar, 放后面拦不住 (实证 trace 7270955a).
-    if len(cat_cols) >= 2:
-        return "table", {}
-
-    # ── 时间 + 数值 → 折线图 ──
-    if len(time_cols) == 1 and len(num_cols) >= 1:
-        return "line", _build_line_option(df, time_cols[0], num_cols)
-
-    # ── LLM 指定了 category_column 且在 DataFrame 中 ──
-    if category_column and category_column in df.columns:
-        value_cols = [c for c in num_cols if c != category_column]
-        if not value_cols:
-            return "table", {}
-        value_col = _pick_value_column(value_cols)
-        unique_count = df[category_column].nunique()
-        if unique_count <= 6:
-            return "pie", _build_pie_option(df, category_column, value_col)
-        return "bar", _build_bar_option(df, category_column, value_col)
-
-    # ── 分类 + 数值 (自动检测) ──
-    if len(cat_cols) == 1 and len(num_cols) >= 1:
-        value_col = _pick_value_column(num_cols) if len(num_cols) > 1 else num_cols[0]
-        unique_count = df[cat_cols[0]].nunique()
-        if unique_count <= 6:
-            return "pie", _build_pie_option(df, cat_cols[0], value_col)
-        return "bar", _build_bar_option(df, cat_cols[0], value_col)
-
-    # ── 兜底: 表格 ──
-    return "table", {}
-
 
 # ════════════════════════════════════════════
 #  内部工具函数
@@ -99,43 +33,160 @@ def _is_time_column(series: pd.Series) -> bool:
 
 
 def _to_serializable(val):
-    if pd.isna(val):
+    """单值 JSON 化: pd.isna / inf / -inf → None, 其余原样."""
+    if val is None:
         return None
+    if isinstance(val, float):
+        # 纯 Python float 在此分支内闭合处理: inf/nan → None, 否则原样 (本身已 JSON 可序列化).
+        return None if (pd.isna(val) or math.isinf(val)) else val
+    try:
+        if pd.isna(val):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(val, (np.integer,)):
+        return int(val)
+    if isinstance(val, (np.floating,)):
+        fv = float(val)
+        return None if math.isinf(fv) or math.isnan(fv) else fv
     if hasattr(val, "item"):
         return val.item()
     return val
 
 
-def _build_line_option(df: pd.DataFrame, time_col: str, num_cols: list[str]) -> dict:
-    x_data = df[time_col].astype(str).tolist()
-    series = [
-        {"name": c, "type": "line", "data": [_to_serializable(v) for v in df[c].tolist()]}
-        for c in num_cols
-    ]
-    return {
+# ════════════════════════════════════════════
+#  Stage 1: 确定性渲染器 (LLM 出列角色, 此处机械渲染)
+#  反转自旧 recommend_chart: 不再 dtype 猜类型, 只按 chart_spec 拼 option.
+# ════════════════════════════════════════════
+
+_VALID_CHART_TYPES = frozenset({"card", "line", "pie", "bar", "table"})
+
+
+def render_chart(rows: list[dict], chart_spec: dict) -> tuple[str, dict]:
+    """确定性渲染. fail-safe: 任何异常/列对不上 → ("table", {})."""
+    try:
+        return _render_chart_impl(rows, chart_spec)
+    except Exception:  # noqa: BLE001 — 渲染器永不抛, 列对不上落表格
+        return "table", {}
+
+
+def _render_chart_impl(rows: list[dict], chart_spec: dict) -> tuple[str, dict]:
+    if not rows:
+        return "table", {}
+    chart_type = (chart_spec or {}).get("chart_type")
+    if chart_type not in _VALID_CHART_TYPES:
+        return "table", {}
+    if chart_type == "table":
+        return "table", {}
+    # 应用兜底 humanize 映射到全量数据
+    rows = _apply_code_label_map(rows, (chart_spec or {}).get("code_label_map") or {})
+    df = pd.DataFrame(rows)
+    if chart_type == "card":
+        return _render_card(df, (chart_spec or {}).get("value") or "")
+    x = chart_spec.get("x") or ""
+    value = chart_spec.get("value") or ""
+    series_by = chart_spec.get("series_by") or ""
+    # 列存在性校验 — 对不上 fail-safe
+    if value and value not in df.columns:
+        return "table", {}
+    if x and x not in df.columns:
+        return "table", {}
+    if series_by and series_by not in df.columns:
+        return "table", {}
+    if chart_type == "line":
+        return _render_line(df, x, value, series_by)
+    if chart_type == "pie":
+        return _render_pie(df, x, value)
+    if chart_type == "bar":
+        return _render_bar(df, x, value, series_by)
+    return "table", {}
+
+
+def _apply_code_label_map(rows: list[dict], code_label_map: dict) -> list[dict]:
+    """对全量 rows 应用 {列名: {code: label}} 替换. code→label 兜底 humanize."""
+    if not code_label_map:
+        return rows
+    out = []
+    for r in rows:
+        nr = dict(r)
+        for col, mapping in code_label_map.items():
+            if col in nr:
+                key = str(nr[col])
+                if key in mapping:
+                    nr[col] = mapping[key]
+        out.append(nr)
+    return out
+
+
+def _render_line(df: pd.DataFrame, x: str, value: str, series_by: str) -> tuple[str, dict]:
+    """x 去重升序; series_by 非空时按其唯一值 pivot 出多条线."""
+    if not x or not value:
+        return "table", {}
+    x_data = sorted(df[x].astype(str).unique().tolist())
+    if series_by:
+        series = []
+        for key in df[series_by].astype(str).unique().tolist():
+            sub = df[df[series_by].astype(str) == key]
+            lookup = {str(r[x]): _to_serializable(r[value]) for _, r in sub.iterrows()}
+            data = [lookup.get(xv) for xv in x_data]  # 缺格补 None
+            series.append({"name": key, "type": "line", "data": data})
+    else:
+        lookup = {str(r[x]): _to_serializable(r[value]) for _, r in df.iterrows()}
+        series = [{"name": value, "type": "line", "data": [lookup.get(xv) for xv in x_data]}]
+    return "line", {
         "xAxis": {"type": "category", "data": x_data},
         "yAxis": {"type": "value"},
         "series": series,
         "tooltip": {"trigger": "axis"},
-        "legend": {"data": num_cols} if len(num_cols) > 1 else {},
+        "legend": {"data": [s["name"] for s in series]} if len(series) > 1 else {},
     }
 
 
-def _build_pie_option(df: pd.DataFrame, cat_col: str, num_col: str) -> dict:
+def _render_bar(df: pd.DataFrame, x: str, value: str, series_by: str) -> tuple[str, dict]:
+    if not x or not value:
+        return "table", {}
+    x_data = sorted(df[x].astype(str).unique().tolist())
+    if series_by:
+        series = []
+        for key in df[series_by].astype(str).unique().tolist():
+            sub = df[df[series_by].astype(str) == key]
+            lookup = {str(r[x]): _to_serializable(r[value]) for _, r in sub.iterrows()}
+            series.append({"name": key, "type": "bar", "data": [lookup.get(xv) for xv in x_data]})
+    else:
+        lookup = {str(r[x]): _to_serializable(r[value]) for _, r in df.iterrows()}
+        series = [{"name": value, "type": "bar", "data": [lookup.get(xv) for xv in x_data]}]
+    return "bar", {
+        "xAxis": {"type": "category", "data": x_data},
+        "yAxis": {"type": "value"},
+        "series": series,
+        "tooltip": {"trigger": "axis"},
+        "legend": {"data": [s["name"] for s in series]} if len(series) > 1 else {},
+    }
+
+
+def _render_pie(df: pd.DataFrame, x: str, value: str) -> tuple[str, dict]:
+    if not x or not value:
+        return "table", {}
     data = [
-        {"name": str(row[cat_col]), "value": _to_serializable(row[num_col])}
-        for _, row in df.iterrows()
+        {"name": str(r[x]), "value": _to_serializable(r[value])}
+        for _, r in df.iterrows()
     ]
-    return {
+    return "pie", {
         "series": [{"type": "pie", "data": data, "radius": "60%"}],
         "tooltip": {"trigger": "item"},
     }
 
 
-def _build_bar_option(df: pd.DataFrame, cat_col: str, num_col: str) -> dict:
-    return {
-        "xAxis": {"type": "category", "data": df[cat_col].astype(str).tolist()},
-        "yAxis": {"type": "value"},
-        "series": [{"type": "bar", "data": [_to_serializable(v) for v in df[num_col].tolist()]}],
-        "tooltip": {"trigger": "axis"},
-    }
+def _render_card(df: pd.DataFrame, value: str = "") -> tuple[str, dict]:
+    # 尊重 chart_spec: LLM 指定了 value 就只出该列单卡 (忠实契约).
+    if value:
+        if value not in df.columns or len(df) != 1:
+            return "table", {}  # 指定列不存在 / 非单行 → fail-safe
+        return "card", {"value": _to_serializable(df.iloc[0][value]), "label": value}
+    # value 留空 (spec 允许): 单值→单卡; 单行多列→多卡 (方向上更完整).
+    if df.shape == (1, 1):
+        return "card", {"value": _to_serializable(df.iloc[0, 0]), "label": df.columns[0]}
+    if len(df) == 1:
+        cards = [{"label": c, "value": _to_serializable(df.iloc[0][c])} for c in df.columns]
+        return "card", {"cards": cards}
+    return "table", {}

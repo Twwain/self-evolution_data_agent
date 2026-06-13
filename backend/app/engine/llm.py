@@ -806,7 +806,7 @@ def _coerce_tool_call_args(tool_calls: list[ToolCall], tools: list[dict]) -> Non
     的 input_schema 声明类型, 把本应是 object/array 却收到 str 的字段用统一解析器
     还原. 解析失败保持原值, 交给后续自然报错, 不掩盖真正畸形的输入.
     """
-    prop_types: dict[str, dict[str, str]] = {}
+    prop_types: dict[str, dict[str, str | None]] = {}
     for spec in tools:
         name = spec.get("name")
         props = (spec.get("input_schema") or {}).get("properties") or {}

@@ -22,6 +22,8 @@ from typing import Any
 
 from langfuse import observe
 
+from app.config import settings
+from app.engine.drivers.base import ExecuteMode
 from app.engine.plan_models import GENERIC_RESTRICTION_HINT, QueryPlan
 from app.tracing import get_client as _lf_client
 
@@ -390,6 +392,9 @@ class PlanExecutionResult:
     step_results: dict[int, list[dict]] = field(default_factory=dict)
     step_exports: dict[int, dict[str, list[Any]]] = field(default_factory=dict)
     final: list[dict] = field(default_factory=list)
+    # §4.6 渲染源截断显式: 末步走 mode=render, 疑似截断时补 count 拿精确总数
+    final_truncated: bool = False
+    final_total_row_count: int = 0
 
     @property
     def last_step_idx(self) -> int:
@@ -398,14 +403,17 @@ class PlanExecutionResult:
 
 async def _execute_mysql_step(
     step, slug: str, ns_id: int, prev_vars: dict[int, dict[str, Any]],
-) -> list[dict]:
+    *, mode: ExecuteMode = "single",
+) -> tuple[list[dict], bool, int]:
     """MySQL step 执行: 通过 driver 层执行 SQL.
 
+    返回 (rows, truncated, total_row_count). 末步 mode='render' 时疑似截断补 count.
     step.query 应为 {"sql": "SELECT ..."} 形态.
     变量替换后的 SQL 中 {{stepN.var}} 已被替换为实际值.
     """
     from app.db.metadata import async_session
     from app.engine.drivers import get_driver
+    from app.engine.drivers.mysql import MySQLDriver
     from app.engine.tools._resolve_ds import resolve_ds
 
     async with async_session() as db:
@@ -418,7 +426,6 @@ async def _execute_mysql_step(
 
     driver = get_driver("mysql")
 
-    # 变量替换 query
     # 变量替换 query
     resolved_query = _resolve_vars(step.query, prev_vars)
 
@@ -440,22 +447,40 @@ async def _execute_mysql_step(
     except VariableResolutionError as e:
         raise PlanExecutionError(step.step_idx, e) from e
 
-    result = await driver.execute_query(
-        ds, step.collection, resolved_query, mode="single",
-    )
-    return list(result.get("rows", []))
+    result = await driver.execute_query(ds, step.collection, resolved_query, mode=mode)
+    rows = list(result.get("rows", []))
+    truncated = bool(result.get("truncated"))
+    total = len(rows)
+    if mode == "render" and truncated:
+        # 疑似截断: 对【剥离外层 LIMIT 后的同一查询】补 count 拿精确总数 (不被 planner LIMIT 封顶)
+        count_sql = MySQLDriver._strip_outer_limit(resolved_query["sql"])
+        try:
+            cres = await driver.execute_query(
+                ds, step.collection, {**resolved_query, "sql": count_sql}, mode="count",
+            )
+            crows = cres.get("rows") or []
+            first = crows[0] if crows and isinstance(crows[0], dict) else {}
+            total = int(first.get("cnt", first.get("count", 0)) or 0)
+            truncated = total > settings.render_row_limit
+        except Exception:  # noqa: BLE001 — count 失败保守降级: 仍如实告知截断, 总数缺省
+            total = 0
+            truncated = True
+    return rows, truncated, total
 
 
 async def _execute_mongo_step(
     step, slug: str, ns_id: int, prev_vars: dict[int, dict[str, Any]],
-) -> list[dict]:
+    *, mode: ExecuteMode = "single",
+) -> tuple[list[dict], bool, int]:
     """MongoDB step 执行: 通过 MongoDriver 执行.
 
+    返回 (rows, truncated, total_row_count). 末步 mode='render' 时疑似截断补 count.
     将 PlanStep 的 operation/pipeline/query/projection/sort 转为
     MongoDriver.execute_query() 期望的 query dict 格式.
     """
     from app.db.metadata import async_session
     from app.engine.drivers import get_driver
+    from app.engine.drivers.mongo import _strip_tail_row_stages
     from app.engine.tools._resolve_ds import resolve_ds
 
     async with async_session() as db:
@@ -500,9 +525,28 @@ async def _execute_mongo_step(
             RuntimeError(f"不支持的 MongoDB operation: {step.operation}"),
         )
 
-    mode = "count" if step.operation == "count_documents" else "single"
-    result = await driver.execute_query(ds, step.collection, query_payload, mode=mode)
-    return list(result.get("rows", []))
+    mode_for_data = "count" if step.operation == "count_documents" else mode
+    result = await driver.execute_query(ds, step.collection, query_payload, mode=mode_for_data)
+    rows = list(result.get("rows", []))
+    truncated = bool(result.get("truncated"))
+    total = len(rows)
+    if mode == "render" and mode_for_data == "render" and truncated:
+        # 疑似截断: 对【executor 侧剥离尾部 $limit/$skip/$sample 的同一查询】补 count.
+        # driver count 模式按既有不变量刻意不剥离 $limit, 故剥离责任必须在 executor.
+        count_payload = dict(query_payload)
+        pl = count_payload.get("pipeline")
+        if isinstance(pl, list):
+            count_payload["pipeline"] = _strip_tail_row_stages(pl)
+        try:
+            cres = await driver.execute_query(ds, step.collection, count_payload, mode="count")
+            crows = cres.get("rows") or []
+            first = crows[0] if crows and isinstance(crows[0], dict) else {}
+            total = int(first.get("count", first.get("cnt", 0)) or 0)
+            truncated = total > settings.render_row_limit
+        except Exception:  # noqa: BLE001 — count 失败保守降级: 仍如实告知截断
+            total = 0
+            truncated = True
+    return rows, truncated, total
 
 
 async def _resolve_step_caps(ns_id: int, database: str) -> dict | None:
@@ -549,6 +593,10 @@ async def execute_plan(
     result = PlanExecutionResult()
     prev_vars: dict[int, dict[str, Any]] = {}
     lf = _lf_client()
+    # 末步 = 渲染源, 走 mode="render" 用 IS_RENDER_ROW_LIMIT; 中间脚手架步仍 single.
+    _last_idx = max((s.step_idx for s in plan.steps), default=0)
+    _step_truncated: dict[int, bool] = {}
+    _step_total: dict[int, int] = {}
 
     for step in plan.steps:
         log.info(
@@ -605,10 +653,17 @@ async def execute_plan(
                 )
 
         try:
+            step_mode: ExecuteMode = "render" if step.step_idx == _last_idx else "single"
             if step.db_type == "mysql":
-                docs = await _execute_mysql_step(step, slug, ns_id, prev_vars)
+                docs, _trunc, _total = await _execute_mysql_step(
+                    step, slug, ns_id, prev_vars, mode=step_mode,
+                )
             else:
-                docs = await _execute_mongo_step(step, slug, ns_id, prev_vars)
+                docs, _trunc, _total = await _execute_mongo_step(
+                    step, slug, ns_id, prev_vars, mode=step_mode,
+                )
+            _step_truncated[step.step_idx] = _trunc
+            _step_total[step.step_idx] = _total
         except Exception as e:
             if step_span is not None:
                 try:
@@ -655,6 +710,8 @@ async def execute_plan(
     if result.step_results:
         last = max(result.step_results.keys())
         result.final = result.step_results[last]
+        result.final_truncated = _step_truncated.get(last, False)
+        result.final_total_row_count = _step_total.get(last, len(result.final))
 
     if lf is not None:
         try:

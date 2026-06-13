@@ -391,6 +391,10 @@ class QueryResponse(BaseModel):
     chart_type: str = "table"  # line | bar | pie | card | table
     chart_option: dict[str, Any] = {}
     performance_warning: str = ""  # 查询性能提示 (非阻断, 仅告知)
+    # §4.6 截断显式 (绝不静默): 渲染源撞 IS_RENDER_ROW_LIMIT 时透传
+    truncated: bool = False
+    rendered_row_count: int = 0
+    total_row_count: int = 0
     error: str = ""
     # Decomposer Routing P1 — 结构化澄清 (ClarifyQuestionCard UI)
     clarification_questions: list["ClarifyQuestion"] = []

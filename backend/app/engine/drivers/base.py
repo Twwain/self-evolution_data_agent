@@ -60,7 +60,7 @@ class ServerCapabilities(TypedDict):
     agg_ops_unsupported: list[str]  # deprecated alias == unsupported_ops
 
 
-ExecuteMode = Literal["single", "probe", "count", "batched"]
+ExecuteMode = Literal["single", "probe", "count", "batched", "render"]
 
 
 class ExecuteResult(TypedDict):

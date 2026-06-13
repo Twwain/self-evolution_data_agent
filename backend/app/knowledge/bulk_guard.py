@@ -102,12 +102,16 @@ class BulkOperationGuard:
         dry_run: bool = True,
         actor_id: int | None = None,
         reason: str = "",
+        full_purge: bool = False,
     ) -> None:
         self.op_name = op_name
         self.scope_filter = scope_filter
         self.dry_run = dry_run
         self.actor_id = actor_id
         self.reason = reason
+        self.full_purge = full_purge
+        """整域销毁模式 (如 namespace 删除): 跳过人类编辑保护 (反正后续 CASCADE 全删),
+        affected 统计反映真实删除规模; audit 锚点 entry_id=NULL 避免被 CASCADE 自毁."""
 
     # ── 内部: 范围与保护集 ─────────────────────────────────────
 
@@ -155,7 +159,11 @@ class BulkOperationGuard:
     def _build_report(
         self, candidates: list[KnowledgeEntry], protected: set[int]
     ) -> tuple[BulkOpReport, list[KnowledgeEntry]]:
-        affected = [e for e in candidates if e.id not in protected]
+        # full_purge: 整域销毁, 不排除 protected (后续 CASCADE 全删, 保护逻辑无意义)
+        if self.full_purge:
+            affected = candidates
+        else:
+            affected = [e for e in candidates if e.id not in protected]
         report = BulkOpReport(
             op_name=self.op_name,
             scope_filter=self.scope_filter,
@@ -269,8 +277,16 @@ class BulkOperationGuard:
         deleted_ids: list[int],
         report: BulkOpReport,
     ) -> KnowledgeAuditLog:
-        """写 bulk_delete 主记录 (宪章 §4). 锚点选取见 _pick_anchor_id."""
-        anchor_id = self._pick_anchor_id(protected, candidates, deleted_ids)
+        """写 bulk_delete 主记录 (宪章 §4). 锚点选取见 _pick_anchor_id.
+
+        full_purge (整域销毁) 时锚点强制 entry_id=NULL: 本次删除的所有 KE 都将被
+        后续 namespace CASCADE 物理删除, 任何指向真实 entry 的锚点都会被级联清掉
+        导致审计自毁; entry_id=NULL 符合"跨 entry 批操作无单一锚点"语义且不受
+        knowledge_entries FK CASCADE 影响, 删除痕迹得以留存.
+        """
+        anchor_id = None if self.full_purge else self._pick_anchor_id(
+            protected, candidates, deleted_ids
+        )
         return await write_audit(
             db,
             entry_id=anchor_id,

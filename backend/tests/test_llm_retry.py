@@ -91,7 +91,7 @@ class TestRetryBehavior:
 
         call_count = {"n": 0}
 
-        def fake_openai_chat(messages, temp, max_tokens):
+        def fake_openai_chat(messages, temp, max_tokens, extra_body=None):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise openai.APIConnectionError(request=MagicMock())
@@ -111,7 +111,7 @@ class TestRetryBehavior:
 
         call_count = {"n": 0}
 
-        def fake_openai_chat(messages, temp, max_tokens):
+        def fake_openai_chat(messages, temp, max_tokens, extra_body=None):
             call_count["n"] += 1
             raise ValueError("bad input")
 
@@ -129,7 +129,7 @@ class TestRetryBehavior:
 
         call_count = {"n": 0}
 
-        def fake_openai_chat(messages, temp, max_tokens):
+        def fake_openai_chat(messages, temp, max_tokens, extra_body=None):
             call_count["n"] += 1
             raise openai.APITimeoutError(request=MagicMock())
 
@@ -149,7 +149,7 @@ class TestRetryBehavior:
 
         call_count = {"n": 0}
 
-        def fake_openai_chat(messages, temp, max_tokens):
+        def fake_openai_chat(messages, temp, max_tokens, extra_body=None):
             call_count["n"] += 1
             raise openai.APIConnectionError(request=MagicMock())
 

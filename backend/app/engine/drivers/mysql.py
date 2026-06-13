@@ -33,6 +33,10 @@ _DML_DDL_KEYWORDS = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|REPLACE|GRANT|REVOKE|CALL)\b",
     re.IGNORECASE,
 )
+# 末尾外层 LIMIT / LIMIT a,b / OFFSET — render/count 剥离 planner 末步行保护用
+_OUTER_LIMIT_RE = re.compile(
+    r"\s+LIMIT\s+\d+(\s*,\s*\d+)?(\s+OFFSET\s+\d+)?\s*;?\s*$", re.IGNORECASE,
+)
 
 
 class MySQLDriver:
@@ -275,6 +279,8 @@ class MySQLDriver:
         truncated = False
         if mode == "single" and len(rows) >= settings.query_row_limit:
             truncated = True
+        elif mode == "render" and len(rows) >= settings.render_row_limit:
+            truncated = True  # 疑似截断 (executor 补 count 纠正/确证)
 
         log.info(
             "[mysql_driver] execute_query done ds=%d rows=%d elapsed_ms=%d",
@@ -350,8 +356,20 @@ class MySQLDriver:
             )
 
     @staticmethod
+    def _strip_outer_limit(sql: str) -> str:
+        """剥离末尾外层 LIMIT/LIMIT a,b/OFFSET (planner 末步行保护).
+
+        仅尾部一处, 不动子查询内 LIMIT. render mode + render-count 共用.
+        """
+        return _OUTER_LIMIT_RE.sub("", sql.rstrip().rstrip(";")).rstrip()
+
+    @staticmethod
     def _wrap_by_mode(sql: str, mode: ExecuteMode, batch_size: int) -> str:
-        """按 mode 包装 SQL (添加 LIMIT). 已有 LIMIT 时不重复添加."""
+        """按 mode 包装 SQL (添加 LIMIT). 已有 LIMIT 时不重复添加.
+
+        render 例外: 不短路 has_limit, 而是剥离末步外层 LIMIT 后 override 为
+        render_row_limit (渲染源行上限唯一所有者, 见 §4.6).
+        """
         # 去除尾部分号
         sql = sql.rstrip().rstrip(";")
         has_limit = "LIMIT" in sql.upper()
@@ -361,6 +379,10 @@ class MySQLDriver:
             return f"SELECT COUNT(*) AS cnt FROM ({sql}) AS _sub"
         elif mode == "batched":
             return sql if has_limit else f"{sql} LIMIT {batch_size}"
+        elif mode == "render":
+            # 剥离 planner 末步外层 LIMIT → 注入 render_row_limit (唯一所有者)
+            base = MySQLDriver._strip_outer_limit(sql)
+            return f"{base} LIMIT {settings.render_row_limit}"
         else:
             # single — 使用全局 row_limit (已有 LIMIT 时不覆盖)
             return sql if has_limit else f"{sql} LIMIT {settings.query_row_limit}"

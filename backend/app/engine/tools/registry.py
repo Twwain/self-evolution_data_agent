@@ -23,8 +23,12 @@ from app.engine.tools.knowledge_tools import lookup_knowledge, save_knowledge
 from app.engine.tools.plan_tools import (
     execute_plan_tool,
     generate_query_plan,
-    recommend_chart_tool,
+    present_result_tool,
 )
+from app.knowledge.prompt_loader import load_prompt
+
+_PRESENT_RESULT_DESC = load_prompt("present_result").body
+_HUMANIZE_HINT = load_prompt("humanize_query_gen").body
 
 # ════════════════════════════════════════════
 #  数据型 / 图表型 tool 集中常量
@@ -36,8 +40,8 @@ EXEC_TOOLS: tuple[str, ...] = (
 )
 """产生最终结果数据的 tool — final_answer 反扫提取 rows/columns/count 等."""
 
-CHART_TOOLS: tuple[str, ...] = ("recommend_chart",)
-"""产生图表推荐的 tool — final_answer 反扫提取 chart_type."""
+CHART_TOOLS: tuple[str, ...] = ("present_result",)
+"""声明最终结果集 + 图表列角色的 tool — finalization 据此 ref 渲染."""
 
 
 # ════════════════════════════════════════════
@@ -58,7 +62,7 @@ REGISTRY: dict[str, Callable] = {
     # Plan 生成 / 执行 / 图表
     "generate_query_plan": generate_query_plan,
     "execute_plan": execute_plan_tool,
-    "recommend_chart": recommend_chart_tool,
+    "present_result": present_result_tool,
 }
 
 
@@ -82,7 +86,7 @@ TOOL_TARGET_FIELD: dict[str, str] = {
     "execute_plan":        "",
     "generate_query_plan": "",
     # 非数据工具
-    "recommend_chart":   "",
+    "present_result":    "",
     "lookup_knowledge":  "",
     "save_knowledge":    "",
     "clarify_with_user": "",
@@ -258,7 +262,8 @@ TOOL_SPECS: list[dict] = [
             "mode: count=只数行, probe=小探查(limit 10), "
             "single=完整结果, batched=分批. "
             "query 形态: MySQL 用 {sql:'...'}, MongoDB 用 {pipeline:[...]}. "
-            "返回 {rows, row_count, truncated, elapsed_ms}."
+            "返回 {rows, row_count, truncated, elapsed_ms, result_ref}. "
+            "result_ref 是本次执行的稳定句柄, 后续 present_result.ref 直接复制它的值."
         ),
         "input_schema": {
             "type": "object",
@@ -361,7 +366,8 @@ TOOL_SPECS: list[dict] = [
             "串行执行 multi-step Plan, 返最终行+列名+步骤 trace. "
             "Use when: generate_query_plan 已产出合法 plan. "
             "Do not use when: plan 尚未成形. "
-            "返回 {rows, columns, last_step_idx}."
+            "返回 {rows, columns, last_step_idx, truncated, total_row_count, result_ref}. "
+            "result_ref 是本次执行的稳定句柄, 后续 present_result.ref 直接复制它的值."
         ),
         "input_schema": {
             "type": "object",
@@ -372,47 +378,29 @@ TOOL_SPECS: list[dict] = [
         },
     },
     {
-        "name": "recommend_chart",
-        "description": (
-            "图表推荐 + 展示列指定. "
-            "Use when: execute_query 或 execute_plan 返回非空 rows 后, 决定前端渲染类型并指定展示维度. "
-            "Do not use when: rows 为空或仅有 count 单值. "
-            "返回 {chart_type, config, category_column}. chart_type ∈ {card, line, pie, bar, table}. "
-            "Input example: rows=[{\"categoryName\":\"电子产品\",\"count\":120,\"percentage\":45.5},...], "
-            "columns=[\"categoryName\",\"count\",\"percentage\"], category_column=\"categoryName\"."
-        ),
+        "name": "present_result",
+        "description": _PRESENT_RESULT_DESC,
         "input_schema": {
             "type": "object",
             "properties": {
-                "rows": {
-                    "type": "array",
-                    "items": {"type": "object"},
-                    "description": (
-                        "execute_query 返回的 rows. "
-                        "允许补充人类可读列 (如将数字编码翻译为中文名称), "
-                        "补充的列应作为 category_column 指定."
-                    ),
-                },
-                "columns": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "rows[0] 的全部 dict key 列表, 顺序决定表格展示顺序. "
-                        "例: [\"categoryName\", \"count\", \"percentage\"]."
-                    ),
-                },
-                "category_column": {
-                    "type": "string",
-                    "description": (
-                        "指定用于图表分类轴的列名 (饼图 name / 折线图 x 轴 / 柱状图 x 轴). "
-                        "必须是 columns 中的一个值. "
-                        "选择人类可读的文本列, 不要选数字编码列. "
-                        "例: rows 含 categoryId=5 和 categoryName='电子产品' 时, "
-                        "指定 category_column='categoryName'."
-                    ),
+                "ref": {"type": "string",
+                        "description": "目标执行的 tool_call_id (execute_query/execute_plan 的成功调用)."},
+                "chart_spec": {
+                    "type": "object",
+                    "properties": {
+                        "chart_type": {"type": "string",
+                                       "enum": ["card", "line", "pie", "bar", "table"]},
+                        "x": {"type": "string", "description": "横轴/分类轴列名."},
+                        "series_by": {"type": "string",
+                                      "description": "可选: 按此列分多系列, 留空=单系列."},
+                        "value": {"type": "string", "description": "数值列名."},
+                        "code_label_map": {"type": "object",
+                                           "description": "可选: {列名:{编码:可读名}} 兜底翻译."},
+                    },
+                    "required": ["chart_type"],
                 },
             },
-            "required": ["rows", "columns", "category_column"],
+            "required": ["ref", "chart_spec"],
         },
     },
 ]
@@ -443,9 +431,15 @@ types 按需选择: instance_alias(别名→记录ID) / example(历史成功对)
 用户回答后 save_knowledge 沉淀.
 6. **代价评估**: 大表查询前先 estimate_cost. \
 只要行数用 execute_query(mode="count"). \
-估算超阈值 → execute_query(mode="batched") 分批.
-7. **执行**: 单源单步 → execute_query(mode="single") + recommend_chart. \
-多步或跨源 → generate_query_plan → execute_plan.
+单步聚合若结果会超行上限 → 不要用更窄条件分多次 single 拼接, \
+改走 generate_query_plan → execute_plan (产出单一完整结果集).
+7. **执行**: 单源单步 → execute_query(mode="single"); \
+多步或跨源 → generate_query_plan → execute_plan. \
+拿到最终结果后调 present_result(ref=该次执行的 tool_call_id, chart_spec={{...}}) 收尾 — \
+不要把数据行复制进入参, 渲染器会用 ref 取服务端完整结果. \
+chart_spec.chart_type 选型: card=单值/指标卡; line=随时间或有序维度的趋势; \
+pie=少数分类占比; bar=分类对比; table=多维或无法用上述表达. \
+对比多个对象 (如多地区/多类别) 时用 series_by 指定分组列, 渲染出多条系列.
 8. **能力兼容**: 构造 aggregate pipeline 前, 比对 fetch_schema / estimate_cost 返回的 \
 server_capabilities 三类限制 (unsupported_ops / unsupported_stage_variants / syntax_constraints). \
 命中任一项时按 equivalent_hints 改用等效写法; 无 hint 时改用不命中该限制的等价表达.
@@ -474,6 +468,10 @@ MySQL 用 {{sql: "SELECT ..."}}, MongoDB 用 {{pipeline: [...]}} 或 {{filter: {
 # 证据不足时
 
 宁可 clarify_with_user 或返回部分结果, 不要编造字段名/表名/集合名/枚举值.
+
+# 展示列可读化
+
+{humanize_hint}
 
 {critical_section}
 
@@ -548,6 +546,7 @@ def build_system_prompt(
     prompt = SYSTEM_PROMPT_TEMPLATE.format(
         single_layer_limit=settings.query_cost_single_layer_limit,
         total_limit=settings.query_cost_total_limit,
+        humanize_hint=_HUMANIZE_HINT,
         critical_section=critical_section,
         anchors_section=anchors_section,
         route_hints_section=route_hints_section,

@@ -15,7 +15,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-
 # ════════════════════════════════════════════
 #  Pipeline 形状归纳
 # ════════════════════════════════════════════
@@ -192,6 +191,11 @@ def compact_tool_call(idx: int, call: dict) -> dict:
     elif name == "recommend_chart":
         rec["chart_type"] = (out or {}).get("chart_type") if isinstance(out, dict) else None
         rec["category_column"] = inp.get("category_column")
+
+    elif name == "present_result":
+        spec = (out or {}).get("chart_spec") if isinstance(out, dict) else None
+        rec["chart_type"] = (spec or {}).get("chart_type") if isinstance(spec, dict) else None
+        rec["category_column"] = (spec or {}).get("x") if isinstance(spec, dict) else None
 
     elif name == "execute_plan":
         plan = inp.get("plan") or {}

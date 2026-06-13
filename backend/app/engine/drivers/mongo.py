@@ -111,6 +111,23 @@ def _classify_query_shape(query: dict) -> tuple[str, Any]:
     return "filter", query.get("filter", {})
 
 
+_TAIL_ROW_STAGES = ("$limit", "$skip", "$sample")
+
+
+def _strip_tail_row_stages(pipeline: list[dict]) -> list[dict]:
+    """剥离 pipeline 尾部连续的行截断 stage ($limit/$skip/$sample).
+
+    render mode + render-count 共用: planner 末步带 $limit 保护中间步, 渲染源/计数
+    必须先剥离它再注入 render_row_limit / $count, 否则结果被 planner LIMIT 封顶.
+    仅剥尾部连续行 stage, 不动 pipeline 中间的 stage.
+    """
+    out = list(pipeline)
+    while out and isinstance(out[-1], dict) and len(out[-1]) == 1 \
+            and next(iter(out[-1]), None) in _TAIL_ROW_STAGES:
+        out.pop()
+    return out
+
+
 class MongoDriver:
     """motor AsyncIOMotorClient 驱动, 实现 DataSourceDriver 协议."""
 
@@ -352,6 +369,8 @@ class MongoDriver:
             limit = 10
         elif mode == "batched":
             limit = batch_size
+        elif mode == "render":
+            limit = settings.render_row_limit
         else:
             limit = settings.query_row_limit
 
@@ -359,6 +378,9 @@ class MongoDriver:
         if shape == "aggregate":
             # aggregate 模式 — 追加 $limit
             pipeline = list(payload)  # 不修改原始
+            if mode == "render":
+                # 剥离 planner 末步 $limit/$skip/$sample → override 为 render_row_limit
+                pipeline = _strip_tail_row_stages(pipeline)
             pipeline.append({"$limit": limit})
             rows: list[dict] = []
             async for doc in coll.aggregate(pipeline):
@@ -428,8 +450,16 @@ class MongoDriver:
 
     # ── lifecycle ────────────────────────────────────────
 
+    async def invalidate_client(self, ds_id: int) -> None:
+        """关闭并移除指定 ds 的 motor client + caps 缓存 (DataSource 删除/变更时调用)."""
+        client = self._clients.pop(ds_id, None)
+        if client is not None:
+            client.close()
+        self._caps_cache.pop(ds_id, None)
+
     async def close_all(self) -> None:
         """关闭所有 motor client."""
         for client in self._clients.values():
             client.close()
         self._clients.clear()
+        self._caps_cache.clear()

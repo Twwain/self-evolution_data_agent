@@ -25,6 +25,21 @@ def get_driver(db_type: str) -> DataSourceDriver:
     return DRIVERS[db_type]
 
 
+async def evict_datasource(ds_id: int) -> None:
+    """DataSource 删除/变更时清理各 driver 中按 ds_id 缓存的连接池/客户端.
+
+    一个 ds 只属于一种 db_type, 对另一种 driver 的清理是 no-op pop (幂等安全).
+    防止 CASCADE 删 datasources 行后, driver 内 _pools/_clients/_caps_cache 残留
+    持有 TCP 连接直到进程重启.
+    """
+    mysql = DRIVERS.get("mysql")
+    if mysql is not None and hasattr(mysql, "invalidate_pool"):
+        await mysql.invalidate_pool(ds_id)  # type: ignore[attr-defined]
+    mongo = DRIVERS.get("mongodb")
+    if mongo is not None and hasattr(mongo, "invalidate_client"):
+        await mongo.invalidate_client(ds_id)  # type: ignore[attr-defined]
+
+
 async def shutdown_all_drivers():
     """uvicorn shutdown hook 调用, 优雅关闭所有 driver 连接池."""
     for driver in DRIVERS.values():

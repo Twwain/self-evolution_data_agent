@@ -61,8 +61,19 @@ export const createNamespace = (data: {
 export const updateNamespace = (id: number, data: { name?: string; description?: string }) =>
   http.put<Namespace>(`/namespaces/${id}`, data).then((r) => r.data);
 
-export const deleteNamespace = (id: number) =>
-  http.delete(`/namespaces/${id}`);
+export const deleteNamespace = async (id: number) => {
+  // 两段式删除: 后端 dry_run 默认 true 仅返回预览不删数据.
+  // step1 拿预览 (affected_count + confirm_token), step2 真删.
+  const preview = await http
+    .delete(`/namespaces/${id}`, { params: { dry_run: true } })
+    .then((r) => r.data);
+  await http.delete(`/namespaces/${id}`, {
+    params: {
+      dry_run: false,
+      ...(preview?.confirm_required ? { confirm_token: preview.confirm_token } : {}),
+    },
+  });
+};
 
 /* ── 数据源 ── */
 export const addDataSource = (nsId: number, data: Record<string, any>) =>

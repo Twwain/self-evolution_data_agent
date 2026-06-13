@@ -23,6 +23,9 @@ interface Props {
   chartType?: string;
   chartOption?: Record<string, unknown>;
   categoryColumn?: string;
+  truncated?: boolean;
+  renderedRowCount?: number;
+  totalRowCount?: number;
   historyId?: number;
   stopReason?: string | null;
 }
@@ -45,7 +48,7 @@ export const STOP_REASON_HINT: Record<string, string> = {
   forced_clarify_exhausted: "已就同类错误多次向你澄清仍未解决，为避免空耗已中止本次查询。",
 };
 
-export const FinalResult: React.FC<Props> = ({ content, rows, columns, chartType, chartOption, categoryColumn, historyId, stopReason }) => {
+export const FinalResult: React.FC<Props> = ({ content, rows, columns, chartType, chartOption, categoryColumn, truncated, renderedRowCount, totalRowCount, historyId, stopReason }) => {
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [sharing, setSharing] = useState(false);
   const [popoverOpen, setPopoverOpen] = useState(false);
@@ -66,6 +69,9 @@ export const FinalResult: React.FC<Props> = ({ content, rows, columns, chartType
         category_column: categoryColumn ?? "",
         chart_option: chartOption ?? {},
         performance_warning: "",
+        truncated: truncated ?? false,
+        rendered_row_count: renderedRowCount ?? 0,
+        total_row_count: totalRowCount ?? 0,
         error: "",
         clarification_questions: [],
         pending_id: 0,

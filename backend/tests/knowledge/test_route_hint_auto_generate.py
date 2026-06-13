@@ -50,8 +50,9 @@ async def test_multi_collection_success_creates_example_and_route_hint(
              }}],
          }]}},
          "output": {"rows": [{"x": 1}, {"x": 2}]}, "status": "ok"},
-        {"name": "recommend_chart", "input": {},
-         "output": {"chart_type": "bar"}, "status": "ok"},
+        {"name": "present_result", "input": {},
+         "output": {"status": "ok", "ref": "call_plan",
+                    "chart_spec": {"chart_type": "bar", "x": "x"}}, "status": "ok"},
     ]
     fake_result = _make_fake_result(fake_trace, "end_turn")
 

@@ -63,6 +63,15 @@ const ResultDisplay: React.FC<Props> = ({ result }) => {
           style={{ marginBottom: 12 }}
         />
       )}
+      {result.truncated && (
+        <Alert
+          type="warning"
+          message="结果已截断"
+          description={`结果共 ${result.total_row_count ?? ""} 行, 仅展示前 ${result.rendered_row_count ?? ""} 行。如需完整图表请缩小范围或使用更粗的聚合粒度 (如按日改按月)。`}
+          showIcon
+          style={{ marginBottom: 12 }}
+        />
+      )}
       <ChartRenderer result={result} chartType={chartType} />
     </div>
   );

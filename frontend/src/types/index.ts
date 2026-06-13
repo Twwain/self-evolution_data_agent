@@ -101,6 +101,10 @@ export interface QueryResponse {
   category_column?: string;
   chart_option: Record<string, any>;
   performance_warning: string;
+  /* §4.6 截断显式 (绝不静默): 渲染源撞 IS_RENDER_ROW_LIMIT 时透传 */
+  truncated?: boolean;
+  rendered_row_count?: number;
+  total_row_count?: number;
   error: string;
   /* Decomposer Routing P1 — 结构化澄清 */
   clarification_questions: ClarifyQuestion[];
