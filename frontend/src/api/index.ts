@@ -79,11 +79,6 @@ export const deleteNamespace = async (id: number) => {
 export const addDataSource = (nsId: number, data: Record<string, any>) =>
   http.post<DataSource>(`/namespaces/${nsId}/datasources`, data).then((r) => r.data);
 
-export const testDataSource = (nsId: number, dsId: number) =>
-  http
-    .post<{ success: boolean; message: string }>(`/namespaces/${nsId}/datasources/${dsId}/test`)
-    .then((r) => r.data);
-
 export const fetchDataSources = (nsId: number) =>
   http.get<DataSource[]>(`/namespaces/${nsId}/datasources`).then((r) => r.data);
 

@@ -6,10 +6,10 @@ Stage 2 Task 4: DELETE namespace 走 BulkOpGuard + confirm_token 防误操作
 """
 
 import hashlib
+import json
+import logging
 
-import pymysql
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pymongo import MongoClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,7 @@ from app.auth import (
 )
 from app.config import settings
 from app.db.metadata import get_db
+from app.engine.drivers import get_driver
 from app.engine.registry import delete_knowledge_collection
 from app.knowledge.bulk_guard import BulkOperationGuard
 from app.models import DataSource, Namespace
@@ -30,7 +31,6 @@ from app.models.user import User, UserNamespaceAccess
 from app.schemas import (
     DataSourceCreate,
     DataSourceOut,
-    DataSourceTestResult,
     NamespaceCreate,
     NamespaceDeletePreview,
     NamespaceOut,
@@ -39,6 +39,8 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/api/namespaces", tags=["namespaces"])
+
+log = logging.getLogger(__name__)
 
 
 # ════════════════════════════════════════════
@@ -241,7 +243,7 @@ async def list_datasources(
     result = await db.execute(
         select(DataSource).where(DataSource.namespace_id == ns_id)
     )
-    return result.scalars().all()
+    return [DataSourceOut.from_orm_ds(ds) for ds in result.scalars().all()]
 
 
 # ════════════════════════════════════════════
@@ -316,6 +318,8 @@ async def add_datasource(
     db: AsyncSession = Depends(get_db),
 ):
     await _get_namespace(db, ns_id)
+    # 构造未落库的临时 ds (id=None) 用于连库验证 + 画像合成.
+    # ⚠️ fetch_db_profile 走一次性临时连接, 不进 ds.id 缓存池 (id 为 None).
     ds = DataSource(
         namespace_id=ns_id,
         db_type=body.db_type,
@@ -324,41 +328,25 @@ async def add_datasource(
         database=body.database,
         username=body.username,
         password=body.password,
+        description=body.description,
     )
+    # 连通才存: fetch_db_profile 的 connected 标志为连通判据 (降级安全, 永不抛).
+    # 用 connected 而非 "version in profile": 受限账号能连但读不到 version 时不应误拒 (D4).
+    driver = get_driver(body.db_type)
+    profile = await driver.fetch_db_profile(ds)
+    if not profile.get("connected"):
+        # 连不上 (connected=False) → 拒绝, 不落库
+        raise HTTPException(
+            400,
+            f"数据源连接失败, 无法访问 {body.host}:{body.port}/{body.database} — "
+            f"请检查 host/port/库名/账号密码是否正确",
+        )
+    profile.pop("connected", None)  # 连通标志是建源决策用, 不落库 (profiled_at 已隐含)
+    ds.db_profile_json = json.dumps(profile, ensure_ascii=False)
     db.add(ds)
     await db.commit()
     await db.refresh(ds)
-    return ds
-
-
-@router.post("/{ns_id}/datasources/{ds_id}/test", response_model=DataSourceTestResult)
-async def test_datasource(
-    ns_id: int,
-    ds_id: int,
-    _user: User = Depends(require_ns_manage),
-    db: AsyncSession = Depends(get_db),
-):
-    ds = await db.get(DataSource, ds_id)
-    if not ds or ds.namespace_id != ns_id:
-        raise HTTPException(404, "数据源不存在")
-
-    try:
-        if ds.db_type == "mysql":
-            conn = pymysql.connect(
-                host=ds.host, port=ds.port, database=ds.database,
-                user=ds.username, password=ds.password, connect_timeout=5,
-            )
-            conn.close()
-        elif ds.db_type == "mongodb":
-            client = MongoClient(
-                host=ds.host, port=ds.port, username=ds.username,
-                password=ds.password, authSource="admin", serverSelectionTimeoutMS=5000,  # noqa: hardcode
-            )
-            client.admin.command("ping")
-            client.close()
-        return DataSourceTestResult(success=True, message="连接成功")
-    except Exception as e:
-        return DataSourceTestResult(success=False, message=str(e))
+    return DataSourceOut.from_orm_ds(ds)
 
 
 @router.post("/{ns_id}/datasources/{ds_id}/refresh-schema", response_model=SchemaRefreshResult)
@@ -374,8 +362,24 @@ async def refresh_schema(
     if not ds or ds.namespace_id != ns_id:
         raise HTTPException(404, "数据源不存在")
 
+    # 库级画像刷新 — db_type 中立 (MySQL/Mongo 皆可), 在 canonical 刷新之前先做,
+    # 使 MongoDB 等暂不支持 canonical 刷新的引擎也能更新 db_profile (Spec §9 无 MySQL-only 限定).
+    # 失败不阻断 (fetch_db_profile 本身降级安全, 连不上保留旧画像).
+    try:
+        driver = get_driver(ds.db_type)
+        profile = await driver.fetch_db_profile(ds)
+        if profile.get("connected"):  # 连通才更新, 连不上保留旧画像
+            profile.pop("connected", None)  # 连通标志不落库 (与建源一致)
+            ds.db_profile_json = json.dumps(profile, ensure_ascii=False)
+    except Exception as e:  # noqa: BLE001 — 画像刷新失败不影响 schema 刷新
+        log.warning("[refresh_schema] db_profile 刷新失败 ds_id=%s: %s", ds_id, e)
+
     if ds.db_type != "mysql":
-        return SchemaRefreshResult(success=False, message="当前仅支持 MySQL 数据源刷新 Schema")
+        # MongoDB 等: 暂无 canonical 刷新支持, 但库级画像已刷新, 持久化后返回
+        await db.commit()
+        return SchemaRefreshResult(
+            success=False, message="当前仅支持 MySQL 数据源刷新 Schema (库级画像已刷新)",
+        )
 
     try:
         from app.knowledge.schema_canonical import refresh_mysql_canonicals

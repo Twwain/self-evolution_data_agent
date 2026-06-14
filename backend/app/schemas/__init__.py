@@ -80,6 +80,7 @@ class DataSourceCreate(BaseModel):
     database: str
     username: str
     password: str  # 明文传入, 服务端加密存储
+    description: str = ""  # 用户填写: 这个库是干嘛的, 给 LLM 看
 
 
 class DataSourceOut(BaseModel):
@@ -89,14 +90,25 @@ class DataSourceOut(BaseModel):
     port: int
     database: str
     username: str
+    description: str
+    db_profile: dict
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
-
-class DataSourceTestResult(BaseModel):
-    success: bool
-    message: str
+    @classmethod
+    def from_orm_ds(cls, ds) -> "DataSourceOut":
+        """从 DataSource ORM 构造, 把 db_profile_json 字符串解析为 dict."""
+        try:
+            profile = json.loads(ds.db_profile_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            profile = {}
+        return cls(
+            id=ds.id, db_type=ds.db_type, host=ds.host, port=ds.port,
+            database=ds.database, username=ds.username,
+            description=ds.description, db_profile=profile,
+            created_at=ds.created_at,
+        )
 
 
 class SchemaRefreshResult(BaseModel):

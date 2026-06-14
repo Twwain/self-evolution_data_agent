@@ -384,6 +384,7 @@ class Settings(BaseSettings):
     """单 SQL 执行超时. env: IS_MYSQL_QUERY_TIMEOUT_SECS"""
     mongo_pool_max_size: int = 100  # noqa: hardcode
     """motor maxPoolSize. env: IS_MONGO_POOL_MAX_SIZE"""
+    mongo_connect_timeout_ms: int = 5000  # IS_MONGO_CONNECT_TIMEOUT_MS — 建源/画像探测超时
 
     # ── Langfuse 追踪 ──
     # 方式 1: 自部署 — docker compose -f docker-compose.langfuse.yml up -d

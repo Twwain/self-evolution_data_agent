@@ -23,6 +23,7 @@ from app.engine.drivers.base import (
     ServerCapabilities,
 )
 from app.models import DataSource
+from app.models.base import local_now
 
 log = logging.getLogger(__name__)
 
@@ -139,6 +140,11 @@ class MongoDriver:
 
     def _get_client(self, ds: DataSource) -> AsyncIOMotorClient:
         """获取或创建 ds 对应的 motor client."""
+        if ds.id is None:
+            raise ValueError(
+                "未落库的 DataSource (ds.id is None) 不可进 client 缓存; "
+                "建源画像请用 fetch_db_profile 的一次性临时 client"
+            )
         if ds.id in self._clients:
             return self._clients[ds.id]
         try:
@@ -447,6 +453,54 @@ class MongoDriver:
         caps = build_capabilities(dict(info), version)
         self._caps_cache[ds.id] = caps  # 仅缓存成功结果 (R3.2)
         return caps
+
+    # ── fetch_db_profile ─────────────────────────────────
+
+    async def fetch_db_profile(self, ds: DataSource) -> dict:
+        """连库合成库级画像. 一次性临时 client, 不进 _clients. 降级安全.
+
+        connected: ping 成功即 True (server 可达 + auth 通过), 与 buildInfo/version
+        抽取解耦. 某些受限/DocumentDB 环境 buildInfo 需权限而 ping 不需 —— 用 ping
+        判连通避免误拒 (D4 降级语义).
+        """
+        profile: dict = {"profiled_at": local_now().isoformat(), "connected": False}
+        client = None
+        try:
+            # 用关键字参数传 host/port/认证, 不拼 URI f-string —— 密码含 @/:/ 时 URI 会断裂.
+            # (现有 _get_client 的 f-string URI 有此缺陷, 此处不复制, 用关键字参数根治.)
+            client = AsyncIOMotorClient(
+                host=ds.host, port=ds.port,
+                username=ds.username, password=ds.password,
+                authSource=ds.database,
+                serverSelectionTimeoutMS=settings.mongo_connect_timeout_ms,
+            )
+            db = client[ds.database]
+            # ping 确认连通 (无需特殊权限, 与 buildInfo/version 抽取解耦)
+            await db.command("ping")
+            profile["connected"] = True
+            # 版本 + flavor (复用 mongo_flavor.build_capabilities)
+            try:
+                info = await client.admin.command("buildInfo")
+                version = info.get("version", "")
+                if version:
+                    profile["version"] = version
+                    from app.engine.drivers.mongo_flavor import build_capabilities
+                    caps = build_capabilities(dict(info), version)
+                    profile["flavor"] = caps["flavor"]
+            except Exception:  # noqa: BLE001 — 降级
+                pass
+            # 对象数量 (collection 数, 只要数字不要清单)
+            try:
+                names = await db.list_collection_names()
+                profile["object_count"] = len(names)
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception as exc:  # noqa: BLE001 — 连不上也返回 (只含 profiled_at)
+            log.warning("[mongo_driver] fetch_db_profile failed ds_host=%s: %s", ds.host, exc)
+        finally:
+            if client is not None:
+                client.close()
+        return profile
 
     # ── lifecycle ────────────────────────────────────────
 

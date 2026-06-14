@@ -17,6 +17,8 @@ export interface DataSource {
   port: number;
   database: string;
   username: string;
+  description: string;
+  db_profile: Record<string, unknown>;
   created_at: string;
 }
 

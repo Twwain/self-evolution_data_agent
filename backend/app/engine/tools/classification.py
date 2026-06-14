@@ -11,6 +11,8 @@ EXPLORATORY: frozenset[str] = frozenset({
     "fetch_schema",
     "inspect_values",
     "estimate_cost",
+    "list_databases",
+    "list_tables",
 })
 """探索类 — read-only / 学习副作用 / schema 探查, 不直接推进最终答案."""
 

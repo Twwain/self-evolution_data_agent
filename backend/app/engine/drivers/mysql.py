@@ -25,6 +25,7 @@ from app.engine.drivers.base import (
     ServerCapabilities,
 )
 from app.models import DataSource
+from app.models.base import local_now
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +50,11 @@ class MySQLDriver:
 
     async def _get_pool(self, ds: DataSource) -> aiomysql.Pool:
         """获取或创建 ds 对应的连接池."""
+        if ds.id is None:
+            raise ValueError(
+                "未落库的 DataSource (ds.id is None) 不可进连接池缓存; "
+                "建源画像请用 fetch_db_profile 的一次性临时连接"
+            )
         if ds.id in self._pools:
             pool = self._pools[ds.id]
             if not pool.closed:
@@ -314,6 +320,65 @@ class MySQLDriver:
     ) -> ServerCapabilities | None:
         """MySQL has no equivalent agg-op version table; return None."""
         return None
+
+    # ── fetch_db_profile ─────────────────────────────────
+
+    async def fetch_db_profile(self, ds: DataSource) -> dict:
+        """连库合成库级画像. 一次性临时连接, 不进 _pools. 降级安全.
+
+        connected: 连接 + auth (+ MySQL 选定 db) 成功即 True, 与后续元信息抽取解耦.
+        建源连通判据用 connected (而非 version 是否抓到), 避免受限账号能连但读不到
+        某项元信息时被误拒 (D4 降级语义).
+        """
+        profile: dict = {"profiled_at": local_now().isoformat(), "connected": False}
+        conn = None
+        try:
+            conn = await aiomysql.connect(
+                host=ds.host, port=ds.port, user=ds.username,
+                password=ds.password, db=ds.database,
+                connect_timeout=settings.mysql_pool_timeout_secs,
+                autocommit=True, charset="utf8mb4",
+            )
+            # 连接 + auth + 选定 db 成功 = 连通 (aiomysql.connect(db=) 会校验库存在)
+            profile["connected"] = True
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                # 版本
+                try:
+                    await cur.execute("SELECT VERSION() AS v")
+                    row = await cur.fetchone()
+                    if row and row.get("v"):
+                        profile["version"] = row["v"]
+                except Exception:  # noqa: BLE001 — 降级: 该键缺省
+                    pass
+                # 字符集
+                try:
+                    await cur.execute(
+                        "SELECT DEFAULT_CHARACTER_SET_NAME AS cs "
+                        "FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = %s",
+                        (ds.database,),
+                    )
+                    row = await cur.fetchone()
+                    if row and row.get("cs"):
+                        profile["charset"] = row["cs"]
+                except Exception:  # noqa: BLE001
+                    pass
+                # 对象数量 (只要数字, 不要清单)
+                try:
+                    await cur.execute(
+                        "SELECT COUNT(*) AS n FROM INFORMATION_SCHEMA.TABLES "
+                        "WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'",
+                        (ds.database,),
+                    )
+                    row = await cur.fetchone()
+                    profile["object_count"] = int((row or {}).get("n") or 0)
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as exc:  # noqa: BLE001 — 连不上也返回 (只含 profiled_at)
+            log.warning("[mysql_driver] fetch_db_profile failed ds_host=%s: %s", ds.host, exc)
+        finally:
+            if conn is not None:
+                conn.close()
+        return profile
 
     # ── lifecycle ────────────────────────────────────────
 

@@ -86,16 +86,17 @@ const NamespacePage: React.FC = () => {
   const handleAddDs = async () => {
     if (!activeNs) return;
     const vals = await dsForm.validateFields();
-    const ds = await api.addDataSource(activeNs.id, vals);
-    const testResult = await api.testDataSource(activeNs.id, ds.id);
-    if (testResult.success) {
-      message.success("数据源添加成功, 连接测试通过");
-    } else {
-      message.warning(`数据源已添加, 但连接测试失败: ${testResult.message}`);
+    try {
+      await api.addDataSource(activeNs.id, vals);
+      message.success("数据源添加成功, 连接已验证");
+      setShowDsModal(false);
+      dsForm.resetFields();
+      loadDetail(activeNs);
+    } catch (e: any) {
+      // 后端连不上返回 400, Modal 不关, 展示具体原因
+      const detail = e?.response?.data?.detail || "连接失败, 请检查连接信息";
+      message.error(`数据源添加失败: ${detail}`);
     }
-    setShowDsModal(false);
-    dsForm.resetFields();
-    loadDetail(activeNs);
   };
 
   const handleRefreshSchema = async (dsId: number) => {
@@ -191,8 +192,12 @@ const NamespacePage: React.FC = () => {
                       >
                         添加数据源
                       </Button>
-                      {datasources.map((ds) => (
-                        <div key={ds.id} className={styles.dsCard}>
+                      {datasources.map((ds) => {
+                        const profiledAt = ds.db_profile?.profiled_at as string | undefined;
+                        const version = ds.db_profile?.version as string | undefined;
+                        const objCount = ds.db_profile?.object_count as number | undefined;
+                        return (
+                        <div key={ds.id} className={styles.dsCard} data-testid="ds-card">
                           <div className={styles.dsInfo}>
                             <div className={styles.dsIcon}>
                               {ds.db_type === "mysql" ? "My" : "Mg"}
@@ -201,11 +206,20 @@ const NamespacePage: React.FC = () => {
                               <div className={styles.dsName}>{ds.database}</div>
                               <div className={styles.dsMeta}>
                                 {ds.host}:{ds.port} · {ds.db_type.toUpperCase()}
+                                {version ? ` · v${version}` : ""}
+                                {typeof objCount === "number" ? ` · ${objCount} 对象` : ""}
                               </div>
+                              {ds.description ? (
+                                <div className={styles.dsMeta}>{ds.description}</div>
+                              ) : null}
                             </div>
                           </div>
                           <div className={styles.dsActions}>
-                            <Tag color="success">已连接</Tag>
+                            <Tag color={profiledAt ? "success" : "default"}>
+                              {profiledAt
+                                ? `初始连接于 ${profiledAt.slice(0, 16).replace("T", " ")}`
+                                : "已添加"}
+                            </Tag>
                             {ds.db_type === "mysql" && (
                               <Button
                                 size="small"
@@ -226,7 +240,8 @@ const NamespacePage: React.FC = () => {
                             </Popconfirm>
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ),
                 },
@@ -305,6 +320,16 @@ const NamespacePage: React.FC = () => {
           </Form.Item>
           <Form.Item name="password" label="密码" rules={[{ required: true }]}>
             <Input.Password />
+          </Form.Item>
+          <Form.Item
+            name="description"
+            label="用途描述"
+            tooltip="这个库存什么数据, 便于 AI 理解 (选填)"
+          >
+            <Input.TextArea
+              rows={2}
+              placeholder="例: 订单交易库 / 设备运维数据"
+            />
           </Form.Item>
         </Form>
       </Modal>

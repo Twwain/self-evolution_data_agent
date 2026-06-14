@@ -5,8 +5,8 @@ from app.engine.tools.classification import (
 from app.engine.tools.registry import REGISTRY
 
 
-def test_classification_covers_all_10_tools():
-    """10 tool 必须全部归类, 缺一个立即失败 (新增 tool 必须显式分类)."""
+def test_classification_covers_all_tools():  # 原 test_classification_covers_all_10_tools
+    """所有 tool 必须全部归类, 缺一个立即失败 (新增 tool 必须显式分类)."""
     classified = EXPLORATORY | DECISIVE | INTERACTIVE
     assert classified == set(REGISTRY.keys()), (
         f"未分类: {set(REGISTRY.keys()) - classified}; "
@@ -37,6 +37,6 @@ def test_classify_unknown_tool_raises():
 
 def test_expected_counts():
     """锁定数量, 防意外漂移."""
-    assert len(EXPLORATORY) == 5
+    assert len(EXPLORATORY) == 7
     assert len(DECISIVE) == 4
     assert len(INTERACTIVE) == 1

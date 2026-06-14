@@ -418,6 +418,13 @@ async def run_all(engine: AsyncEngine) -> None:
     await _migrate_terminology_source_to_schema(engine)
     # migration_021 (three-tier-rbac): role 扩列 + ns.created_by + admin 升级 + 回填 + FK 修复
     await _migrate_rbac_three_tier(engine)
+    # migration_022 (datasource-catalog): DataSource 加 description + db_profile_json.
+    # 库级画像字段 — description 用户手填用途, db_profile_json 建源连库合成 (版本/charset/对象数).
+    # 跟随 fields_json 惯例用 TEXT 存 JSON 串, 不用 JSONB.
+    await _add_missing(engine, "datasources", [
+        ("description", "TEXT NOT NULL DEFAULT ''"),
+        ("db_profile_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ])
 
 
 async def _migrate_rbac_three_tier(engine: AsyncEngine) -> None:

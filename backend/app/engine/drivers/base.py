@@ -118,3 +118,12 @@ class DataSourceDriver(Protocol):
     ) -> ServerCapabilities | None:
         """Return server version + version-gated features. None if not applicable."""
         ...
+
+    async def fetch_db_profile(self, ds: DataSource) -> dict:
+        """连库合成库级画像 (版本/字符集或flavor/对象数量).
+
+        ⚠️ 走一次性临时连接, 不进 ds.id 缓存池 (建源时 ds.id 尚为 None).
+        降级语义: 每个子查询独立 try, 抓到几个算几个, 永不抛异常.
+        返回 dict 缺某键 = 该项抽取失败, 不影响其他键. profiled_at 始终有.
+        """
+        ...

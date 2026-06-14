@@ -18,6 +18,7 @@ from app.engine.tools.data_access_tools import (
     fetch_schema,
     inspect_values,
 )
+from app.engine.tools.catalog_tools import list_databases, list_tables
 from app.engine.tools.interaction_tools import clarify_with_user
 from app.engine.tools.knowledge_tools import lookup_knowledge, save_knowledge
 from app.engine.tools.plan_tools import (
@@ -63,6 +64,9 @@ REGISTRY: dict[str, Callable] = {
     "generate_query_plan": generate_query_plan,
     "execute_plan": execute_plan_tool,
     "present_result": present_result_tool,
+    # 库表目录 (纯 PG 读, 冷启动打底)
+    "list_databases": list_databases,
+    "list_tables": list_tables,
 }
 
 
@@ -90,6 +94,9 @@ TOOL_TARGET_FIELD: dict[str, str] = {
     "lookup_knowledge":  "",
     "save_knowledge":    "",
     "clarify_with_user": "",
+    # 库表目录 (持有 database, 不持有 target)
+    "list_databases":    "",
+    "list_tables":       "",
 }
 
 # "真探查"工具: 表明 LLM 主动获取 collection 元信息或字段值,
@@ -288,6 +295,42 @@ TOOL_SPECS: list[dict] = [
             "required": ["db_type", "database", "target", "query"],
         },
     },
+    # ── 库表目录 (纯 PG 读, 冷启动打底) ──
+    {
+        "name": "list_databases",
+        "description": (
+            "列出当前所有已配置的数据源 (db_type / 数据库名 / 用户填写的用途描述 / "
+            "库级画像 version/charset/object_count). "
+            "Use when: 不清楚有哪些库可查, 或已有知识中无匹配的库. "
+            "Do not use when: 已有知识 (术语/schema/规则) 足以确定目标库名. "
+            "返回 {databases: [{db_type, database, description, db_profile}], count}."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "list_tables",
+        "description": (
+            "列出指定数据库下已提取的所有表/集合的名称和用途描述 (只列表名, 不返回字段明细). "
+            "入参 database 为库名 (来自 list_databases). "
+            "Use when: 知道库名但不确定有哪些表. "
+            "Do not use when: 需要表的字段明细 (用 fetch_schema); 或已确定目标表. "
+            "返回 {database, tables: [{target, description, field_count, reviewed}], count}. "
+            "若 tables 为空, 阅读 status 与 hint 字段判断下一步: "
+            "status=no_schema_extracted 表示该库未提取 schema; "
+            "status=unknown_database 表示库名不在数据源列表 (回 list_databases 对照). "
+            'Input example: {"database": "my_orders_db"}.'
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "database": {"type": "string", "description": "库名, 来自 list_databases"},
+            },
+            "required": ["database"],
+        },
+    },
     # ── 用户交互 ──
     {
         "name": "clarify_with_user",
@@ -415,6 +458,21 @@ SYSTEM_PROMPT_TEMPLATE = """你是数据分析助手 (NL2Query). 给定用户的
 
 [业务术语锚点] 的 `[db_type]` 前缀决定走哪个驱动; \
 所有数据访问类工具都按锚点给出的 (db_type, database, target) 三件套执行.
+
+# 目录探索 (知识不足时的自主探索)
+
+当已有知识 (术语/schema/规则) 不足以确定应查哪个库或哪些表时, 使用目录工具自主探索:
+
+- list_databases: 列出当前所有已配置的数据源 (db_type / 库名 / 用途描述 / 库级画像). 当你不清楚有哪些库可查时调用.
+- list_tables(database): 列出指定库下已提取的表名和用途描述. 当你知道库名但不确定有哪些表时调用.
+
+探索策略:
+1. 按各数据源的用途描述 (description) 做语义路由: 判断哪个库与用户问题最相关, 不盲目遍历所有库.
+   例: 问题关于"订单金额", 选用途含订单/交易语义的库.
+2. list_tables 返回空 (status=no_schema_extracted) 时:
+   - 若还有其他语义相关的数据源, 对其继续 list_tables.
+   - 若所有相关库均无表, 告知用户: 对该数据源执行「刷新schema」或解析 Git 仓库后可显著提升查询准确性.
+3. 所有数据源均无 description (无法语义路由) 时, 不要臆测选库 — 直接 clarify_with_user 询问用户应查哪个库.
 
 # 工作流骨架
 

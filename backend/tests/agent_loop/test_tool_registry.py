@@ -4,13 +4,14 @@ from app.engine.tools.registry import REGISTRY, TOOL_SPECS, build_system_prompt
 from app.models.namespace import Namespace
 
 
-def test_registry_has_all_13_tools():
+def test_registry_has_expected_tools():  # 原 test_registry_has_all_13_tools (名字里的 13 一直是错的)
     expected = {
         "lookup_knowledge", "save_knowledge",
         "fetch_schema", "inspect_values",
         "estimate_cost", "execute_query",
         "clarify_with_user",
         "generate_query_plan", "execute_plan", "present_result",
+        "list_databases", "list_tables",
     }
     assert set(REGISTRY.keys()) == expected
     assert {s["name"] for s in TOOL_SPECS} == expected
@@ -57,3 +58,18 @@ def test_input_schema_has_no_runtime_context_kwargs():
         props = spec["input_schema"].get("properties", {})
         leaked = set(props.keys()) & forbidden
         assert not leaked, f"tool {spec['name']} leaks runtime kwargs: {leaked}"
+
+
+def test_system_prompt_mentions_catalog_tools():
+    """冷启动方法论: prompt 须引导用 list_databases 自主探索."""
+    from app.config import settings
+    from app.engine.tools.registry import build_system_prompt
+    from app.models.namespace import Namespace
+    ns = Namespace(slug="t_cat", name="t_cat")
+    prompt = build_system_prompt(settings=settings, namespace=ns)
+    assert "list_databases" in prompt
+    assert "list_tables" in prompt
+    # 语义路由方法论关键词
+    assert "语义" in prompt
+    # D7 escape clause 存在
+    assert "clarify_with_user" in prompt

@@ -89,13 +89,16 @@ async def list_schema_canonicals(
     db: AsyncSession,
     namespace_id: int,
     db_type: str | None = None,
+    database: str | None = None,
 ) -> list[SchemaCanonicalObject]:
-    """列出 namespace 下全部 canonical, 可选按 db_type 过滤."""
+    """列出 namespace 下全部 canonical, 可选按 db_type / database 过滤."""
     stmt = select(SchemaCanonicalObject).where(
         SchemaCanonicalObject.namespace_id == namespace_id,
     )
     if db_type:
         stmt = stmt.where(SchemaCanonicalObject.db_type == db_type)
+    if database:
+        stmt = stmt.where(SchemaCanonicalObject.database == database)
     stmt = stmt.order_by(SchemaCanonicalObject.db_type, SchemaCanonicalObject.target)
     result = await db.execute(stmt)
     return list(result.scalars().all())
