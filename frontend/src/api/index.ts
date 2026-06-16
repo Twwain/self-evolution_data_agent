@@ -308,7 +308,7 @@ export const previewConflict = (body: {
 
 export interface NamespaceDatabase {
   database: string;
-  db_type: "mysql" | "mongodb";
+  db_type: import("@/types").DbType;
   datasource_id: number;
   host: string;
 }
@@ -320,7 +320,7 @@ export const getDatabases = (nsId: number) =>
 
 export const getCollections = (nsId: number, database: string) =>
   http
-    .get<{ database: string; db_type: "mysql" | "mongodb" | null; collections: string[] }>(
+    .get<{ database: string; db_type: import("@/types").DbType | null; collections: string[] }>(
       `/namespaces/${nsId}/collections`,
       { params: { database } },
     )
@@ -445,7 +445,7 @@ export const terminologyApi = {
 
 export interface EnumCandidateBody {
   namespace_id: number;
-  db_type: "mongodb" | "mysql";
+  db_type: import("@/types").DbType;
   enum_class_name: string;
   values: { name: string; db_value: number | string; description?: string | null }[];
   comment?: string;

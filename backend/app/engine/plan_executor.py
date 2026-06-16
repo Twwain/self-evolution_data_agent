@@ -105,8 +105,9 @@ def pre_validate_vars(plan: QueryPlan) -> None:
                 f"但 step{idx}.exports={sorted(export_map[idx])}"
             )
 
+    from app.engine.db_types import SQL_DB_TYPES as _SQL_DB_TYPES
     for step in plan.steps:
-        is_sql = step.db_type == "mysql"
+        is_sql = step.db_type in _SQL_DB_TYPES
         carriers: list[Any] = [step.pipeline, step.query, step.projection, step.sort]
         for carrier in carriers:
             for s in _walk_strings(carrier):
@@ -401,43 +402,45 @@ class PlanExecutionResult:
         return max(self.step_results.keys()) if self.step_results else 0
 
 
-async def _execute_mysql_step(
+async def _execute_sql_step(
     step, slug: str, ns_id: int, prev_vars: dict[int, dict[str, Any]],
     *, mode: ExecuteMode = "single",
 ) -> tuple[list[dict], bool, int]:
-    """MySQL step 执行: 通过 driver 层执行 SQL.
+    """SQL 型 step 执行 (MySQL / Oracle 共用): 通过 driver 层执行 SQL.
 
     返回 (rows, truncated, total_row_count). 末步 mode='render' 时疑似截断补 count.
     step.query 应为 {"sql": "SELECT ..."} 形态.
-    变量替换后的 SQL 中 {{stepN.var}} 已被替换为实际值.
+    render 补 count 路径通过 driver.strip_outer_row_limit() 剥离行数保护,
+    不直接引用 MySQLDriver 或 OracleDriver 具体类.
     """
     from app.db.metadata import async_session
     from app.engine.drivers import get_driver
-    from app.engine.drivers.mysql import MySQLDriver
     from app.engine.tools._resolve_ds import resolve_ds
 
+    db_type = step.db_type
     async with async_session() as db:
-        ds = await resolve_ds(db, ns_id, "mysql", step.database)
+        ds = await resolve_ds(db, ns_id, db_type, step.database)
     if ds is None:
         raise PlanExecutionError(
             step.step_idx,
-            RuntimeError(f"未找到 database={step.database} 的 mysql datasource (ns={ns_id})"),
+            RuntimeError(
+                f"未找到 database={step.database} 的 {db_type} datasource (ns={ns_id})"
+            ),
         )
 
-    driver = get_driver("mysql")
+    driver = get_driver(db_type)
 
     # 变量替换 query
     resolved_query = _resolve_vars(step.query, prev_vars)
 
     # 确保 query 有 sql key
     if "sql" not in resolved_query:
-        # 如果 step 用的是 pipeline 形态 (错误配置), 报错
         raise PlanExecutionError(
             step.step_idx,
-            RuntimeError("MySQL step 需要 query.sql 字段"),
+            RuntimeError(f"{db_type} step 需要 query.sql 字段"),
         )
 
-    # SQL 串里嵌入的 {{stepN.var}} (如 IN (...) ) 渲染为安全字面量列表
+    # SQL 串里嵌入的 {{stepN.var}} (如 IN (...)) 渲染为安全字面量列表
     # (_resolve_vars 只做整串替换, 嵌入式变量留给这里处理)
     try:
         resolved_query = {
@@ -452,8 +455,9 @@ async def _execute_mysql_step(
     truncated = bool(result.get("truncated"))
     total = len(rows)
     if mode == "render" and truncated:
-        # 疑似截断: 对【剥离外层 LIMIT 后的同一查询】补 count 拿精确总数 (不被 planner LIMIT 封顶)
-        count_sql = MySQLDriver._strip_outer_limit(resolved_query["sql"])
+        # 疑似截断: 剥离最外层行保护后补 count, 拿精确总数 (不被 planner 末步保护封顶).
+        # 通过 SqlDataSourceDriver 协议方法调用, 不引用具体 driver 类.
+        count_sql = driver.strip_outer_row_limit(resolved_query["sql"])  # type: ignore[attr-defined]
         try:
             cres = await driver.execute_query(
                 ds, step.collection, {**resolved_query, "sql": count_sql}, mode="count",
@@ -581,8 +585,9 @@ async def execute_plan(
     串行执行 plan. 每步按 step.db_type + step.database 选引擎执行.
 
     多态 dispatch:
-    - db_type="mysql": 走 MySQLDriver
-    - db_type="mongodb": 走 MongoDriver
+    - db_type in SQL_DB_TYPES (mysql/oracle): 走 _execute_sql_step → 对应 driver
+    - db_type="mongodb": 走 _execute_mongo_step → MongoDriver
+    - 未知 db_type: 明确抛 UnsupportedDataSourceTypeError, 不落入 MongoDB 分支
 
     sse_emit: SSE 事件推送回调, 每 step 完成后 emit plan_step_done 事件.
 
@@ -653,14 +658,21 @@ async def execute_plan(
                 )
 
         try:
+            from app.engine.db_types import SQL_DB_TYPES as _SQL_TYPES
+            from app.engine.drivers._exceptions import UnsupportedDataSourceTypeError
             step_mode: ExecuteMode = "render" if step.step_idx == _last_idx else "single"
-            if step.db_type == "mysql":
-                docs, _trunc, _total = await _execute_mysql_step(
+            if step.db_type in _SQL_TYPES:
+                docs, _trunc, _total = await _execute_sql_step(
+                    step, slug, ns_id, prev_vars, mode=step_mode,
+                )
+            elif step.db_type == "mongodb":
+                docs, _trunc, _total = await _execute_mongo_step(
                     step, slug, ns_id, prev_vars, mode=step_mode,
                 )
             else:
-                docs, _trunc, _total = await _execute_mongo_step(
-                    step, slug, ns_id, prev_vars, mode=step_mode,
+                raise UnsupportedDataSourceTypeError(
+                    f"step_idx={step.step_idx} 不支持的 db_type={step.db_type!r}",
+                    suggestion="当前仅支持 mysql / oracle / mongodb",
                 )
             _step_truncated[step.step_idx] = _trunc
             _step_total[step.step_idx] = _total

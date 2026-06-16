@@ -11,7 +11,7 @@ import type { EnumCanonical } from "@/types/schema-canonical";
 
 interface Props {
   namespaceId: number;
-  dbType: "mongodb" | "mysql";
+  dbType: import("@/types").DbType;
 }
 
 export function EnumDictionaryTab({ namespaceId, dbType }: Props) {

@@ -19,7 +19,7 @@ export interface TerminologyPayload {
   term?: string;
   primary_collection?: string;
   primary_database?: string;
-  db_type?: "mysql" | "mongodb";
+  db_type?: import("@/types").DbType;
   synonyms?: string[];
   source_collections?: string[];
 }
@@ -83,11 +83,11 @@ export default function TerminologyEditPanel({
 
   const collections = currentDb ? (collectionsByDb[currentDb] ?? []) : [];
 
-  // ── label 按 db_type 区分: mysql 用"表/table", mongodb 用"集合/collection" ──
+  // ── label 按 db_type 区分: mongodb 用"集合/collection", 其他 SQL 型(mysql/oracle)用"表/table" ──
   const collectionLabel =
-    value.db_type === "mysql" ? "表 (table)" : "集合 (collection)";
+    value.db_type === "mongodb" ? "集合 (collection)" : "表 (table)";
   const collectionPlaceholder =
-    value.db_type === "mysql" ? "选择表" : "选择集合";
+    value.db_type === "mongodb" ? "选择集合" : "选择表";
 
   const handleDatabaseChange = (db: string) => {
     // ── primary_database 切换 → 强制重置 collection (避免脏数据) ──

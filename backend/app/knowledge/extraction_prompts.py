@@ -259,7 +259,7 @@ Output format (strict JSON):
       "synonyms": ["<同义词1>", "<同义词2>"],
       "primary_collection": "<主集合/表名>",
       "primary_database": null,
-      "db_type": "<mysql|mongodb>",
+      "db_type": "<mysql|mongodb|oracle>",
       "primary_field": null,
       "source_collections": ["<相关集合1>", "<相关集合2>"]
     }}

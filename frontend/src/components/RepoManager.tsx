@@ -327,7 +327,11 @@ const RepoManager: React.FC<Props> = ({ nsId, datasources, repos, batchStatus, o
               )}
               {mappings.map((m: any) => (
                 <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                  <Tag color={datasources.find((d) => d.id === m.datasource_id)?.db_type === "mongodb" ? "blue" : "green"}>
+                  <Tag color={
+                    datasources.find((d) => d.id === m.datasource_id)?.db_type === "mongodb" ? "blue"
+                    : datasources.find((d) => d.id === m.datasource_id)?.db_type === "oracle" ? "red"
+                    : "green"
+                  }>
                     {datasources.find((d) => d.id === m.datasource_id)?.database || `DS#${m.datasource_id}`}
                     ({datasources.find((d) => d.id === m.datasource_id)?.db_type})
                   </Tag>

@@ -26,7 +26,7 @@ export const PlanProgress: React.FC<Props> = ({ steps, running }) => {
   const items = steps.map((s) => ({
     title: (
       <span>
-        <Tag color={s.db_type === "mysql" ? "blue" : "green"}>{s.db_type}</Tag>
+        <Tag color={s.db_type === "mysql" ? "blue" : s.db_type === "oracle" ? "red" : "green"}>{s.db_type}</Tag>
         {s.target}
       </span>
     ),

@@ -5,7 +5,7 @@
  *  初次进入自动恢复 localStorage 记忆的命名空间 (NamespaceSelector 内).
  * ════════════════════════════════════════════ */
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState, useMemo } from "react";
 import {
   Button,
   Form,
@@ -28,9 +28,19 @@ import NamespaceSelector from "@/components/NamespaceSelector";
 import type {
   BatchStatus,
   DataSource,
+  DbType,
   GitRepo,
   Namespace,
 } from "@/types";
+
+/** 数据库类型元信息 — 全局唯一, 替换所有二分判断 */
+const DB_TYPE_META: Record<DbType, {
+  short: string; label: string; color: string; isSql: boolean; defaultPort: number;
+}> = {
+  mysql:   { short: "My", label: "MySQL",   color: "blue",  isSql: true,  defaultPort: 3306 },
+  mongodb: { short: "Mg", label: "MongoDB", color: "green", isSql: false, defaultPort: 27017 },
+  oracle:  { short: "Or", label: "Oracle",  color: "red",   isSql: true,  defaultPort: 1521 },
+};
 import RepoManager from "@/components/RepoManager";
 import { clearLastNamespaceId } from "@/hooks/useLastNamespaceId";
 import styles from "@/styles/namespace.module.css";
@@ -42,6 +52,8 @@ const NamespacePage: React.FC = () => {
   const [showDsModal, setShowDsModal] = useState(false);
   const [form] = Form.useForm();
   const [dsForm] = Form.useForm();
+  /** 监听数据源表单 db_type 变化, 用于动态调整 label/placeholder */
+  const dsDbType = Form.useWatch<string>("db_type", dsForm);
   /** 重挂 NamespaceSelector, 让 create/delete 后重新拉列表 + 重新默认 */
   const [selectorKey, setSelectorKey] = useState(0);
 
@@ -200,7 +212,7 @@ const NamespacePage: React.FC = () => {
                         <div key={ds.id} className={styles.dsCard} data-testid="ds-card">
                           <div className={styles.dsInfo}>
                             <div className={styles.dsIcon}>
-                              {ds.db_type === "mysql" ? "My" : "Mg"}
+                              {(DB_TYPE_META[ds.db_type] ?? DB_TYPE_META.mysql).short}
                             </div>
                             <div>
                               <div className={styles.dsName}>{ds.database}</div>
@@ -220,7 +232,7 @@ const NamespacePage: React.FC = () => {
                                 ? `初始连接于 ${profiledAt.slice(0, 16).replace("T", " ")}`
                                 : "已添加"}
                             </Tag>
-                            {ds.db_type === "mysql" && (
+                            {(DB_TYPE_META[ds.db_type] ?? DB_TYPE_META.mysql).isSql && (
                               <Button
                                 size="small"
                                 loading={refreshingDs === ds.id}
@@ -297,13 +309,22 @@ const NamespacePage: React.FC = () => {
         onOk={handleAddDs}
         onCancel={() => setShowDsModal(false)}
       >
-        <Form form={dsForm} layout="vertical">
+        <Form
+          form={dsForm}
+          layout="vertical"
+          onValuesChange={(changed) => {
+            // 选择数据库类型时自动填写默认端口
+            if (changed.db_type) {
+              const meta = DB_TYPE_META[changed.db_type as DbType];
+              if (meta) dsForm.setFieldValue("port", meta.defaultPort);
+            }
+          }}
+        >
           <Form.Item name="db_type" label="类型" rules={[{ required: true }]}>
             <Select
-              options={[
-                { value: "mysql", label: "MySQL" },
-                { value: "mongodb", label: "MongoDB" },
-              ]}
+              options={Object.entries(DB_TYPE_META).map(([v, m]) => ({
+                value: v, label: m.label,
+              }))}
             />
           </Form.Item>
           <Form.Item name="host" label="主机" rules={[{ required: true }]}>
@@ -312,8 +333,24 @@ const NamespacePage: React.FC = () => {
           <Form.Item name="port" label="端口" rules={[{ required: true }]}>
             <InputNumber style={{ width: "100%" }} />
           </Form.Item>
-          <Form.Item name="database" label="数据库" rules={[{ required: true }]}>
-            <Input />
+          {/* Oracle 的 database 字段含义是 Service Name */}
+          <Form.Item
+            name="database"
+            label={
+              dsDbType === "oracle" ? "Service Name" : "数据库"
+            }
+            tooltip={
+              dsDbType === "oracle"
+                ? "Oracle Service Name, 例如 orclpdb"
+                : undefined
+            }
+            rules={[{ required: true }]}
+          >
+            <Input
+              placeholder={
+                dsDbType === "oracle" ? "orclpdb" : undefined
+              }
+            />
           </Form.Item>
           <Form.Item name="username" label="用户名" rules={[{ required: true }]}>
             <Input />

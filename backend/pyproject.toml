@@ -26,6 +26,7 @@ dependencies = [
     "json-repair>=0.50.0",  # LLM 残缺 JSON 本地修复 (未转义引号/尾随逗号等)
     "pyahocorasick>=2.0.0",  # AC 自动机术语精确匹配
     "aiomysql>=0.2.0",
+    "oracledb>=2.0.0",
     "sqlparse>=0.5.0",
     "pandas>=2.0.0",
     "langfuse>=2.0.0",

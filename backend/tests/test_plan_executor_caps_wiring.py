@@ -10,10 +10,10 @@ These tests cover how `execute_plan` consumes the pure validator
 - A native/empty-caps mongodb step passes through to the driver (validation does
   not block; `_execute_mongo_step` is reached).
 - A mysql step is not pre-validated at all (caps resolution is skipped) and passes
-  through to the driver (`_execute_mysql_step` is reached).
+  through to the driver (`_execute_sql_step` is reached).
 
 `_resolve_step_caps` (DB I/O) is patched to return chosen caps; `_execute_mongo_step`
-/ `_execute_mysql_step` are patched with mocks to detect whether the driver path was
+/ `_execute_sql_step` are patched with mocks to detect whether the driver path was
 reached. No live DocumentDB / database required.
 
 Validates: Requirements 5.1, 5.3, 5.5
@@ -182,12 +182,12 @@ async def test_mysql_step_skips_pre_validation_and_passes_through_to_driver():
                      query={"sql": "SELECT COUNT(*) AS n FROM t LIMIT 100"})],
     )
     resolve_caps = AsyncMock(return_value=_documentdb_caps())
-    mysql_driver_path = AsyncMock(return_value=([{"n": 5}], False, 1))
+    sql_driver_path = AsyncMock(return_value=([{"n": 5}], False, 1))
     with patch("app.engine.plan_executor._resolve_step_caps", new=resolve_caps), \
-         patch("app.engine.plan_executor._execute_mysql_step", new=mysql_driver_path):
+         patch("app.engine.plan_executor._execute_sql_step", new=sql_driver_path):
         result = await execute_plan(plan, slug="ns", ns_id=1)
 
     # mysql step → pre-validation does not apply: caps are never resolved
     resolve_caps.assert_not_called()
-    mysql_driver_path.assert_awaited_once()
+    sql_driver_path.assert_awaited_once()
     assert result.final == [{"n": 5}]

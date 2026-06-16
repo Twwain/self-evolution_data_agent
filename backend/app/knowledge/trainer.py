@@ -171,18 +171,18 @@ def _build_docs(code_result):
     )
 
 
-def _collect_referenced_mysql_tables(
+def _collect_referenced_sql_tables(
     mybatis_entries: list[dict],
     jpa_entities: list[dict],
     coll_to_db: dict[str, str],
 ) -> set[str]:
-    """聚合本 repo 引用的 mysql 表名 — 给 refresh_mysql_canonicals 收窄 introspect 范围.
+    """聚合本 repo 引用的 SQL 型表名 (MySQL / Oracle) — 给 refresh_driver_canonicals 收窄 introspect 范围.
 
     信号:
         - mybatis: SELECT entry 的 SQL 中 FROM/JOIN 命中的表
         - jpa: @Table 关联的实体表
-    coll_to_db 用于剔除非 mysql ds 的表名 (mongo collection 同名混入会被 dict 校验剔除).
-    返回空集 → 本 repo 与 mysql 无关, refresh_mysql_canonicals 早返 0 noop.
+    coll_to_db 用于剔除非 SQL ds 的表名 (mongo collection 同名混入会被 dict 校验剔除).
+    返回空集 → 本 repo 与 SQL 型数据源无关, refresh_driver_canonicals 早返 0 noop.
     """
     tables: set[str] = set()
     for entry in mybatis_entries or []:
@@ -304,6 +304,25 @@ async def run_training_pipeline_with_progress(
                     for tbl in tables:
                         if tbl not in coll_to_db:
                             coll_to_db[tbl] = ds.database
+                elif ds.db_type == "oracle":
+                    # 导入 OracleDriver 模块确保 _maybe_init_thick_mode() 已执行
+                    # （IS_ORACLE_THICK_MODE_LIB_DIR 非空时必须先 init_oracle_client）
+                    import app.engine.drivers.oracle as _oracle_mod  # noqa: F401
+                    import oracledb  # type: ignore[import-untyped]
+                    dsn = f"{ds.host}:{ds.port}/{ds.database}"
+                    conn = oracledb.connect(
+                        user=ds.username,
+                        password=ds.password,
+                        dsn=dsn,
+                        tcp_connect_timeout=settings.oracle_connect_timeout_secs,
+                    )
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT TABLE_NAME FROM USER_TABLES ORDER BY TABLE_NAME")
+                        tables = sorted(row[0] for row in cur.fetchall())
+                    conn.close()
+                    for tbl in tables:
+                        if tbl not in coll_to_db:
+                            coll_to_db[tbl] = ds.database
             except Exception as e:
                 log.warning("[%s] collection→db 反查连接失败 ds_id=%d db_type=%s: %s",
                             name, ds.id, ds.db_type, e)
@@ -393,26 +412,30 @@ async def run_training_pipeline_with_progress(
     # ── 6.4 MySQL introspect → mysql introspect candidate (Stage B B1) ──
     # 收窄到本 repo 引用过的表 (mybatis FROM/JOIN + jpa @Table). 跨 repo 并集
     # 由 candidate value_hash 幂等 + ns 级累积自然形成. 未引用的表永不入 candidate.
-    referenced_tables = _collect_referenced_mysql_tables(
+    referenced_tables = _collect_referenced_sql_tables(
         code_result.mybatis_entries, code_result.jpa_entities, coll_to_db,
     )
-    await on_progress(93, "MySQL Schema introspect...")
+    await on_progress(93, "SQL Schema introspect...")
     async with async_session() as introspect_db:
         try:
-            from app.knowledge.schema_canonical import refresh_mysql_canonicals
-            ds_count = await refresh_mysql_canonicals(
-                introspect_db, ns_id, ns_slug,
-                referenced_tables=referenced_tables,
-                repo_name=name,
-                # 不在此内部 promote: 汇聚交给 step 6.5 maybe_trigger_promote 统一
-                # 处理 (与 MongoDB 候选路径对齐), 避免同一训练内重复全量 promote.
-                trigger_promote=False,
-            )
+            from app.engine.db_types import SQL_DB_TYPES
+            from app.knowledge.schema_canonical import refresh_driver_canonicals
+            total_ds_count = 0
+            for sql_db_type in SQL_DB_TYPES:
+                ds_count = await refresh_driver_canonicals(
+                    introspect_db, ns_id, ns_slug, db_type=sql_db_type,
+                    referenced_targets=referenced_tables,
+                    repo_name=name,
+                    # 不在此内部 promote: 汇聚交给 step 6.5 maybe_trigger_promote 统一
+                    # 处理 (与 MongoDB 候选路径对齐), 避免同一训练内重复全量 promote.
+                    trigger_promote=False,
+                )
+                total_ds_count += ds_count
             await introspect_db.commit()
-            log.info("[%s] MySQL introspect 完成, 处理表数=%d", name, ds_count)
+            log.info("[%s] SQL introspect 完成, 处理表数=%d", name, total_ds_count)
         except Exception as e:
             log.warning(
-                "[%s] MySQL introspect 失败 (best-effort): %s", name, e,
+                "[%s] SQL introspect 失败 (best-effort): %s", name, e,
             )
             await introspect_db.rollback()
 

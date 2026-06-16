@@ -71,7 +71,11 @@ function TermInfoCard({
       <div style={{ marginTop: 8 }}>
         <Space size={4} wrap>
           {payload.db_type && (
-            <Tag color={payload.db_type === "mongodb" ? "geekblue" : "purple"}>
+            <Tag color={
+              payload.db_type === "mongodb" ? "geekblue"
+              : payload.db_type === "oracle" ? "red"
+              : "purple"
+            }>
               {payload.db_type}
             </Tag>
           )}
@@ -139,7 +143,7 @@ const TerminologyConflictModal: React.FC<Props> = ({
       term: existingPayload.term ?? "",
       primary_database: existingPayload.primary_database,
       primary_collection: existingPayload.primary_collection,
-      db_type: existingPayload.db_type as "mysql" | "mongodb" | undefined,
+      db_type: existingPayload.db_type as import("@/types").DbType | undefined,
       synonyms: mergedSynonyms,
       source_collections: mergedSourceColls,
     };

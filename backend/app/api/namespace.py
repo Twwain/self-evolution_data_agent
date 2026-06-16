@@ -374,16 +374,20 @@ async def refresh_schema(
     except Exception as e:  # noqa: BLE001 — 画像刷新失败不影响 schema 刷新
         log.warning("[refresh_schema] db_profile 刷新失败 ds_id=%s: %s", ds_id, e)
 
-    if ds.db_type != "mysql":
-        # MongoDB 等: 暂无 canonical 刷新支持, 但库级画像已刷新, 持久化后返回
+    from app.engine.db_types import SQL_DB_TYPES
+
+    if ds.db_type not in SQL_DB_TYPES:
+        # MongoDB 等文档型: 暂无 canonical 刷新支持, 但库级画像已刷新, 持久化后返回
         await db.commit()
         return SchemaRefreshResult(
-            success=False, message="当前仅支持 MySQL 数据源刷新 Schema (库级画像已刷新)",
+            success=False, message="当前 MongoDB 数据源暂不支持 Schema 刷新 (库级画像已刷新)",
         )
 
     try:
-        from app.knowledge.schema_canonical import refresh_mysql_canonicals
-        count = await refresh_mysql_canonicals(db, ns_id, ns.slug, datasource_id=ds_id)
+        from app.knowledge.schema_canonical import refresh_driver_canonicals
+        count = await refresh_driver_canonicals(
+            db, ns_id, ns.slug, db_type=ds.db_type, datasource_id=ds_id,
+        )
         await db.commit()
         return SchemaRefreshResult(
             success=True,

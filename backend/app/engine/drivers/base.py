@@ -71,6 +71,20 @@ class ExecuteResult(TypedDict):
 
 
 @runtime_checkable
+class SqlDataSourceDriver(Protocol):
+    """SQL 型数据源驱动额外约定: 暴露行数保护剥离方法, 供 plan_executor render/count 路径使用.
+
+    MySQL 与 Oracle driver 均需实现此方法; MongoDB driver 不实现.
+    plan_executor 在 SQL 分支通过 get_driver(db_type).strip_outer_row_limit(sql) 调用,
+    不 import 任何具体 driver 类.
+    """
+
+    def strip_outer_row_limit(self, sql: str) -> str:
+        """剥离最外层行数保护 (MySQL LIMIT / Oracle ROWNUM wrapper), 供 executor render/count 用."""
+        ...
+
+
+@runtime_checkable
 class DataSourceDriver(Protocol):
     """所有数据源驱动必须实现此协议."""
 

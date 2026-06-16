@@ -8,10 +8,12 @@ from app.engine.drivers._exceptions import UnsupportedDataSourceTypeError
 from app.engine.drivers.base import DataSourceDriver
 from app.engine.drivers.mongo import MongoDriver
 from app.engine.drivers.mysql import MySQLDriver
+from app.engine.drivers.oracle import OracleDriver
 
 DRIVERS: dict[str, DataSourceDriver] = {
     "mysql": MySQLDriver(),
     "mongodb": MongoDriver(),
+    "oracle": OracleDriver(),
 }
 
 
@@ -28,16 +30,17 @@ def get_driver(db_type: str) -> DataSourceDriver:
 async def evict_datasource(ds_id: int) -> None:
     """DataSource 删除/变更时清理各 driver 中按 ds_id 缓存的连接池/客户端.
 
-    一个 ds 只属于一种 db_type, 对另一种 driver 的清理是 no-op pop (幂等安全).
+    遍历所有已注册 driver, 优先调用 invalidate_pool, 否则调 invalidate_client.
+    一个 ds 只属于一种 db_type, 对其他 driver 的清理是 no-op pop (幂等安全).
     防止 CASCADE 删 datasources 行后, driver 内 _pools/_clients/_caps_cache 残留
     持有 TCP 连接直到进程重启.
+    新增 driver 时无需修改此函数, 只需在 DRIVERS 注册.
     """
-    mysql = DRIVERS.get("mysql")
-    if mysql is not None and hasattr(mysql, "invalidate_pool"):
-        await mysql.invalidate_pool(ds_id)  # type: ignore[attr-defined]
-    mongo = DRIVERS.get("mongodb")
-    if mongo is not None and hasattr(mongo, "invalidate_client"):
-        await mongo.invalidate_client(ds_id)  # type: ignore[attr-defined]
+    for driver in DRIVERS.values():
+        if hasattr(driver, "invalidate_pool"):
+            await driver.invalidate_pool(ds_id)  # type: ignore[attr-defined]
+        elif hasattr(driver, "invalidate_client"):
+            await driver.invalidate_client(ds_id)  # type: ignore[attr-defined]
 
 
 async def shutdown_all_drivers():

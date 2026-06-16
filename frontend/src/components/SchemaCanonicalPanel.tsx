@@ -43,7 +43,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
   const [activeKey, setActiveKey] = useState("all");
   const [selectedSco, setSelectedSco] = useState<SchemaCanonicalObject | null>(null);
   const [loading, setLoading] = useState(false);
-  const [dbType, setDbType] = useState<"all" | "mysql" | "mongodb">("all");
+  const [dbType, setDbType] = useState<"all" | import("@/types").DbType>("all");
 
   // Evidence drawer state
   const [evidenceDrawer, setEvidenceDrawer] = useState<{
@@ -240,7 +240,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
       children: (
         <EnumDictionaryTab
           namespaceId={namespaceId}
-          dbType={dbType === "all" ? "mongodb" : dbType}
+          dbType={dbType === "all" ? "mysql" : dbType}
         />
       ),
     },
@@ -302,6 +302,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
               { value: "all", label: "全部" },
               { value: "mysql", label: "MySQL" },
               { value: "mongodb", label: "MongoDB" },
+              { value: "oracle", label: "Oracle" },
             ]}
             style={{ width: 140 }}
           />

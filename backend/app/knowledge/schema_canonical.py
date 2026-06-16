@@ -4,7 +4,9 @@
 - get_schema_canonical: 按 (ns_id, db_type, database, target) 查单条
 - upsert_schema_canonical: 幂等写入 (存在则更新, 不存在则插入)
 - list_schema_canonicals: 按 namespace 列出全部
-- refresh_mysql_canonicals: 从 MySQLDriver introspect 刷新 namespace 下所有 MySQL 表
+- refresh_driver_canonicals: SQL 型数据源通用 introspect → candidate (MySQL / Oracle 共用)
+- refresh_mysql_canonicals: refresh_driver_canonicals 的 MySQL wrapper (向后兼容)
+- refresh_oracle_canonicals: refresh_driver_canonicals 的 Oracle wrapper
 - backfill_indexes_from_driver: 从 driver introspect 补充 SCO 的 indexes_json + field indexed
 """
 from __future__ import annotations
@@ -104,30 +106,30 @@ async def list_schema_canonicals(
     return list(result.scalars().all())
 
 
-async def refresh_mysql_canonicals(
+async def refresh_driver_canonicals(
     db: AsyncSession,
     namespace_id: int,
     ns_slug: str,
-    referenced_tables: set[str] | None = None,
+    db_type: str,
+    referenced_targets: set[str] | None = None,
     repo_name: str = "",
     trigger_promote: bool = True,
     datasource_id: int | None = None,
 ) -> int:
-    """从 MySQLDriver introspect 写入 candidate 层 (不再直写 SchemaCanonicalObject).
+    """SQL 型数据源通用 introspect → candidate 写入入口 (MySQL / Oracle 共用).
 
     Args:
-        referenced_tables: 仅 introspect 集合内的表名 (per-repo 范围收窄).
+        db_type: 数据源类型 (mysql | oracle), 决定查哪批 DataSource + 用哪个 driver.
+        referenced_targets: 仅 introspect 集合内的表名 (per-repo 范围收窄).
             None → 全表 introspect (手动按钮路径保留旧语义).
-            空 set → 早返 0 (本 repo 无 mysql 引用, noop).
+            空 set → 早返 0 (本 repo 无该类型引用, noop).
         datasource_id: 仅刷新指定数据源 (per-row 按钮路径收窄).
-            None → namespace 下全部 MySQL 数据源 (trainer / ns 级端点旧语义).
+            None → namespace 下全部该类型数据源.
         trigger_promote: 写完 candidate 后是否内部触发 promote + 索引补充.
-            True (默认, 手动刷新端点用) → 自给自足汇聚, 因端点无后续汇聚步骤.
-            False (trainer step 6.4 用) → 只写候选, 汇聚交给 step 6.5 的
-            maybe_trigger_promote 统一处理, 与 MongoDB 候选路径对齐, 避免
-            同一训练内重复全量 promote (历史冗余, 见 stage-b spec).
+            True (默认, 手动刷新端点用).
+            False (trainer 用) → 只写候选, 汇聚交给外层统一处理.
 
-    返回处理的表数量 (backward compat). 调用方负责 commit.
+    返回处理的表数量. 调用方负责 commit.
     """
     from sqlalchemy import select as sa_select
 
@@ -136,12 +138,12 @@ async def refresh_mysql_canonicals(
     from app.knowledge.canonical_promote import promote_candidates_to_canonical
     from app.models import DataSource
 
-    if referenced_tables is not None and not referenced_tables:
+    if referenced_targets is not None and not referenced_targets:
         return 0
 
     ds_stmt = sa_select(DataSource).where(
         DataSource.namespace_id == namespace_id,
-        DataSource.db_type == "mysql",
+        DataSource.db_type == db_type,
     )
     if datasource_id is not None:
         ds_stmt = ds_stmt.where(DataSource.id == datasource_id)
@@ -150,7 +152,7 @@ async def refresh_mysql_canonicals(
     if not ds_rows:
         return 0
 
-    driver = get_driver("mysql")
+    driver = get_driver(db_type)
     table_count = 0
 
     for ds in ds_rows:
@@ -161,7 +163,7 @@ async def refresh_mysql_canonicals(
 
             for table_stub in schemas:
                 target = table_stub["target"]
-                if referenced_tables is not None and target not in referenced_tables:
+                if referenced_targets is not None and target not in referenced_targets:
                     continue
                 detail = await driver.fetch_schema(ds, target=target)
                 if isinstance(detail, list):
@@ -170,7 +172,7 @@ async def refresh_mysql_canonicals(
                 await write_introspect_candidates_for_target(
                     db,
                     namespace_id=namespace_id,
-                    db_type="mysql",
+                    db_type=db_type,
                     database=ds.database,
                     target=detail["target"],
                     detail=cast("dict[str, Any]", detail),
@@ -180,8 +182,8 @@ async def refresh_mysql_canonicals(
 
         except Exception as e:
             log.warning(
-                "[%s] MySQL introspect failed ds=%d: %s",
-                repo_name, ds.id, e,
+                "[%s] %s introspect failed ds=%d: %s",
+                repo_name, db_type.upper(), ds.id, e,
             )
 
     # 写完所有 candidate 后触发 promote (仅 trigger_promote=True)
@@ -191,14 +193,52 @@ async def refresh_mysql_canonicals(
         # datasource_id 收窄时只补该数据源的 database, 不碰其他数据源
         backfill_database = ds_rows[0].database if datasource_id is not None else None
         await backfill_indexes_from_driver(
-            db, namespace_id, db_type="mysql", database=backfill_database,
+            db, namespace_id, db_type=db_type, database=backfill_database,
         )
 
     log.info(
-        "[%s] refreshed %d MySQL tables (via candidate) for ns=%d",
-        repo_name, table_count, namespace_id,
+        "[%s] refreshed %d %s tables (via candidate) for ns=%d",
+        repo_name, table_count, db_type.upper(), namespace_id,
     )
     return table_count
+
+
+async def refresh_mysql_canonicals(
+    db: AsyncSession,
+    namespace_id: int,
+    ns_slug: str,
+    referenced_tables: set[str] | None = None,
+    repo_name: str = "",
+    trigger_promote: bool = True,
+    datasource_id: int | None = None,
+) -> int:
+    """MySQL 专用 wrapper — 向后兼容, 内部委托给 refresh_driver_canonicals."""
+    return await refresh_driver_canonicals(
+        db, namespace_id, ns_slug, db_type="mysql",
+        referenced_targets=referenced_tables,
+        repo_name=repo_name,
+        trigger_promote=trigger_promote,
+        datasource_id=datasource_id,
+    )
+
+
+async def refresh_oracle_canonicals(
+    db: AsyncSession,
+    namespace_id: int,
+    ns_slug: str,
+    referenced_tables: set[str] | None = None,
+    repo_name: str = "",
+    trigger_promote: bool = True,
+    datasource_id: int | None = None,
+) -> int:
+    """Oracle 专用 wrapper — 内部委托给 refresh_driver_canonicals."""
+    return await refresh_driver_canonicals(
+        db, namespace_id, ns_slug, db_type="oracle",
+        referenced_targets=referenced_tables,
+        repo_name=repo_name,
+        trigger_promote=trigger_promote,
+        datasource_id=datasource_id,
+    )
 
 
 async def backfill_indexes_from_driver(

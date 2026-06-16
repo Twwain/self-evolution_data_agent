@@ -149,7 +149,7 @@ TOOL_SPECS: list[dict] = [
             "Do not use when: 信息仅对当前查询有效, 或锚点已覆盖. "
             "payload 按 entry_type 不同:\n"
             "- terminology: {term, primary_collection, primary_database, "
-            "db_type: mysql|mongodb, synonyms?:[], source_collections?:[]}\n"
+            "db_type: mysql|mongodb|oracle, synonyms?:[], source_collections?:[]}\n"
             "- instance_alias: {alias, target_collection, target_database, "
             "target_id, id_field?:'_id', canonical_name?}\n"
             "- example: {question, target_collection, "
@@ -252,7 +252,7 @@ TOOL_SPECS: list[dict] = [
                 "query": {
                     "type": "object",
                     "description": (
-                        "查询载荷. MySQL: {sql:'SELECT...'}, "
+                        "查询载荷. MySQL/Oracle: {sql:'SELECT...'} (Oracle 用 Oracle SQL 方言, 不支持 LIMIT), "
                         "MongoDB: {pipeline:[...]} 或 {filter:{...}}"
                     ),
                 },
@@ -268,7 +268,8 @@ TOOL_SPECS: list[dict] = [
             "Do not use when: 跨 db_type 或跨 database (用 generate_query_plan). "
             "mode: count=只数行, probe=小探查(limit 10), "
             "single=完整结果, batched=分批. "
-            "query 形态: MySQL 用 {sql:'...'}, MongoDB 用 {pipeline:[...]}. "
+            "query 形态: MySQL/Oracle 用 {sql:'...'} (Oracle 用 Oracle SQL 方言, 不写 LIMIT), "
+            "MongoDB 用 {pipeline:[...]}. "
             "返回 {rows, row_count, truncated, elapsed_ms, result_ref}. "
             "result_ref 是本次执行的稳定句柄, 后续 present_result.ref 直接复制它的值."
         ),
@@ -372,7 +373,7 @@ TOOL_SPECS: list[dict] = [
                     "items": {
                         "type": "object",
                         "properties": {
-                            "db_type": {"enum": ["mysql", "mongodb"]},
+                            "db_type": {"enum": ["mysql", "mongodb", "oracle"]},
                             "database": {"type": "string"},
                             "collection": {"type": "string", "description": "集合名(Mongo)或表名(MySQL)"},
                         },
@@ -508,7 +509,9 @@ server_capabilities 三类限制 (unsupported_ops / unsupported_stage_variants /
 必传 (db_type, database, target) 三件套:
 - db_type 从锚点 `[...]` 读, 不要猜
 - query 字段形态由 db_type 决定: \
-MySQL 用 {{sql: "SELECT ..."}}, MongoDB 用 {{pipeline: [...]}} 或 {{filter: {{...}}}}
+MySQL 用 {{sql: "SELECT ... LIMIT n"}}, \
+Oracle 用 {{sql: "SELECT ..."}} (Oracle SQL 方言, 不支持 LIMIT; 行数保护用 FETCH FIRST n ROWS ONLY 或不写, 执行层自动包装), \
+MongoDB 用 {{pipeline: [...]}} 或 {{filter: {{...}}}}
 - 结果中的 DBRef 字段呈现为 {{$ref: 目标集合名, $id_str: 目标记录ID字符串}}; \
 需关联时取 $id_str 当普通字符串匹配目标集合的关联字段.
 
