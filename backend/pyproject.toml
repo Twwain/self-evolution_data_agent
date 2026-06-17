@@ -37,6 +37,7 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.6.0",
+    "hypothesis>=6.0.0",   # property-based testing (test_json_parser, test_mongo_flavor 等)
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -56,6 +57,8 @@ asyncio_default_test_loop_scope = "session"
 markers = [
     "real_llm: tests that require a real LLM API key (skipped by default in CI; gated to acceptance phase)",
     "live: real-system tests, opt-in via -m live",
+    "slow: long-running tests, opt-in via -m slow",
+    "timeout: tests with explicit timeout constraints",
 ]
 
 [tool.ruff]

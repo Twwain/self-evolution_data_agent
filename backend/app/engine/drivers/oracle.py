@@ -487,7 +487,7 @@ class OracleDriver:
 
         t0 = time.perf_counter()
         if _is_thick():
-            def _sync() -> tuple[list[dict], bool]:
+            def _sync() -> list[dict]:  # 只返回 rows，不含 bool
                 pool = self._get_sync_pool(ds)
                 with pool.acquire() as conn:
                     cur = conn.cursor()
@@ -512,7 +512,7 @@ class OracleDriver:
                     await asyncio.wait_for(cur.execute(sql), timeout=settings.oracle_query_timeout_secs)
                     rows_raw = await cur.fetchall()
                     rows = _cursor_to_dicts(cur, rows_raw)
-                    await cur.close()
+                    cur.close()  # close() 是同步方法，不能 await
             except asyncio.TimeoutError as exc:
                 raise QueryTimeoutError(
                     f"SQL 执行超时 ({settings.oracle_query_timeout_secs}s): {sql[:100]}",
@@ -615,7 +615,7 @@ class OracleDriver:
                         profile[key] = extractor(row)
                 except Exception:
                     pass
-            await cur.close()
+            cur.close()  # close() 是同步方法，不能 await
         except Exception as exc:
             profile["error"] = str(exc)[:300]
             log.warning("[oracle_driver] fetch_db_profile failed host=%s: %s", ds.host, exc)
