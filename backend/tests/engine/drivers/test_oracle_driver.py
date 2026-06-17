@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from app.config import settings
@@ -13,7 +15,6 @@ from app.engine.drivers.oracle import (
     _cursor_to_dicts,
     _strip_outer_row_limit_impl,
 )
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  _strip_outer_row_limit_impl
@@ -203,3 +204,75 @@ def test_mysql_driver_exposes_strip_outer_row_limit():
     result = driver.strip_outer_row_limit(sql)
     assert "LIMIT 100" not in result
     assert "id FROM t" in result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  C3: Thin mode fetch_db_profile — connect_async 必须被 await（离线 monkeypatch）
+#
+#  历史 bug: connect_async() 返回的 AsyncConnection 有 __await__，
+#  不 await 则对象未连接，所有查询均报 DPY-1001: not connected to database，
+#  但 connected=True 被无条件写入，导致错误凭据的数据源通过建源校验并落库。
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _make_fake_ds(host: str = "fake-host") -> MagicMock:
+    ds = MagicMock()
+    ds.id = None
+    ds.host = host
+    ds.port = 1521
+    ds.database = "orcl"
+    ds.username = "test"
+    ds.password = "1"
+    return ds
+
+
+@pytest.mark.asyncio
+async def test_thin_fetch_db_profile_connected_on_success():
+    """Thin mode: connect_async 被 await → connected=True + 基础 profile 字段."""
+    # 构造模拟 AsyncConnection
+    fake_cur = MagicMock()
+    fake_cur.execute = AsyncMock()
+    fake_cur.fetchone = AsyncMock(
+        side_effect=[
+            ("Oracle Database 19c",),
+            ("TEST_SCHEMA",),
+            (12,),
+        ]
+    )
+    fake_cur.close = MagicMock()
+
+    fake_conn = MagicMock()
+    fake_conn.cursor = MagicMock(return_value=fake_cur)
+    fake_conn.close = AsyncMock()
+
+    # connect_async 是同步函数，但返回值必须可 await（有 __await__）
+    async def _fake_connect_async(**_kw):
+        return fake_conn
+
+    with patch("app.engine.drivers.oracle._is_thick", return_value=False), \
+         patch("app.engine.drivers.oracle.oracledb.connect_async",
+               side_effect=_fake_connect_async):
+        driver = OracleDriver()
+        profile = await driver.fetch_db_profile(_make_fake_ds())
+
+    assert profile["connected"] is True, "connect_async 被 await → 应连通"
+    assert "profiled_at" in profile
+    assert profile["version"] == "Oracle Database 19c"
+    assert profile["schema"] == "TEST_SCHEMA"
+    assert profile["object_count"] == 12
+    assert fake_cur.execute.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_thin_fetch_db_profile_connected_false_on_error():
+    """Thin mode: connect_async 抛异常 → connected=False，不置 True。"""
+    async def _fail(**_kw):
+        raise OSError("connect refused")
+
+    with patch("app.engine.drivers.oracle._is_thick", return_value=False), \
+         patch("app.engine.drivers.oracle.oracledb.connect_async",
+               side_effect=_fail):
+        driver = OracleDriver()
+        profile = await driver.fetch_db_profile(_make_fake_ds())
+
+    assert profile["connected"] is False, "连接失败 → 不得写入 connected=True"
+    assert "error" in profile

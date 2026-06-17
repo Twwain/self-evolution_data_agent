@@ -5,7 +5,7 @@
  *  初次进入自动恢复 localStorage 记忆的命名空间 (NamespaceSelector 内).
  * ════════════════════════════════════════════ */
 
-import React, { useCallback, useEffect, useState, useMemo } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Button,
   Form,

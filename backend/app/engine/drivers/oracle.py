@@ -69,7 +69,11 @@ def _maybe_init_thick_mode() -> None:
         else:
             log.warning("[oracle_driver] init_oracle_client 失败: %s", e)
     except Exception as e:
-        log.warning("[oracle_driver] Thick mode 初始化失败 lib_dir=%s: %s — 退回 Thin mode", lib_dir, e)
+        log.warning(
+            "[oracle_driver] Thick mode 初始化失败 lib_dir=%s: %s — 退回 Thin mode",
+            lib_dir,
+            e,
+        )
 
 
 _maybe_init_thick_mode()
@@ -182,17 +186,11 @@ class OracleDriver:
         return pool
 
     def _get_sync_pool(self, ds: DataSource) -> oracledb.ConnectionPool:
-        """Thick mode: 获取或创建同步连接池。"""
+        """同步连接池 — Thick/Thin 均可用（oracledb.create_pool 不区分模式）。"""
         if ds.id is None:
             raise ValueError("ds.id is None — 建源画像请用 fetch_db_profile")
         if ds.id in self._sync_pools:
-            pool = self._sync_pools[ds.id]
-            # oracledb sync ConnectionPool 用 open 属性（而非 closed）
-            try:
-                if getattr(pool, "open", True):
-                    return pool
-            except Exception:
-                pass
+            return self._sync_pools[ds.id]
         try:
             pool = oracledb.create_pool(
                 user=ds.username, password=ds.password, dsn=self._dsn(ds),
@@ -206,7 +204,9 @@ class OracleDriver:
         except Exception as exc:
             raise ConnectionFailureError(
                 f"Oracle 连接失败: {self._dsn(ds)} — {exc}",
-                suggestion="检查 host/port/service_name/credentials 及 Oracle Instant Client 是否安装",
+                suggestion=(
+                    "检查 host/port/service_name/credentials 及 Oracle Instant Client 是否安装"
+                ),
             ) from exc
         self._sync_pools[ds.id] = pool
         return pool
@@ -221,24 +221,43 @@ class OracleDriver:
     async def fetch_schema(
         self, ds: DataSource, target: str | None = None,
     ) -> SchemaSnapshot | list[SchemaSnapshot]:
-        log.info("[oracle_driver] fetch_schema ds=%s target=%s thick=%s", ds.id, target, _is_thick())
-        if _is_thick():
-            return await self._run_in_executor(self._fetch_schema_sync, ds, target)
-        return await self._fetch_schema_async(ds, target)
+        """Thick/Thin 统一走 executor + 同步连接，消除两份重复实现。"""
+        log.info("[oracle_driver] fetch_schema ds=%s target=%s", ds.id, target)
+        return await self._run_in_executor(self._fetch_schema_sync, ds, target)
 
-    def _fetch_schema_sync(self, ds: DataSource, target: str | None) -> SchemaSnapshot | list[SchemaSnapshot]:
-        pool = self._get_sync_pool(ds)
-        with pool.acquire() as conn:
-            return self._fetch_schema_impl(conn, ds, target, is_async=False)
+    def _fetch_schema_sync(
+        self,
+        ds: DataSource,
+        target: str | None,
+    ) -> SchemaSnapshot | list[SchemaSnapshot]:
+        """单份同步实现，在线程执行器中运行。
 
-    async def _fetch_schema_async(self, ds: DataSource, target: str | None) -> SchemaSnapshot | list[SchemaSnapshot]:
-        pool = await self._get_async_pool(ds)
-        async with pool.acquire() as conn:
-            cursor = conn.cursor()
-            return await self._fetch_schema_impl_async(cursor, ds, target)
+        ds.id 不为 None（已落库的数据源）时，Thick/Thin 统一走 _get_sync_pool 复用连接，
+        避免全库刷新时 N+1 次建连（fetch_schema(None) + N × fetch_schema(target)）。
+        ds.id 为 None（建源画像场景）时退化为一次性连接。
+        """
+        if ds.id is not None:
+            # 复用同步连接池（oracledb.create_pool 在 Thin/Thick 模式下均有效）
+            pool = self._get_sync_pool(ds)
+            with pool.acquire() as conn:
+                return self._schema_queries(conn, ds, target)
+        # ds.id=None（建源前画像）→ 一次性连接
+        conn = oracledb.connect(
+            user=ds.username, password=ds.password, dsn=self._dsn(ds),
+            tcp_connect_timeout=settings.oracle_connect_timeout_secs,
+        )
+        try:
+            return self._schema_queries(conn, ds, target)
+        finally:
+            conn.close()
 
-    def _fetch_schema_impl(self, conn, ds: DataSource, target: str | None, is_async: bool = False) -> SchemaSnapshot | list[SchemaSnapshot]:
-        """同步版 schema 拉取（Thick mode 专用，在线程中执行）。"""
+    @staticmethod
+    def _schema_queries(
+        conn: Any,
+        ds: DataSource,
+        target: str | None,
+    ) -> SchemaSnapshot | list[SchemaSnapshot]:
+        """单份 Oracle schema 查询逻辑，供 Thick/Thin 共用。"""
         cur = conn.cursor()
         if target is None:
             cur.execute(
@@ -276,11 +295,11 @@ class OracleDriver:
                 name=dict(zip(col_desc, r))["column_name"],
                 type=dict(zip(col_desc, r))["data_type"],
                 description=dict(zip(col_desc, r)).get("comments") or "",
-                indexed=False, nullable=dict(zip(col_desc, r)).get("nullable", "Y") == "Y",
+                indexed=False,
+                nullable=dict(zip(col_desc, r)).get("nullable", "Y") == "Y",
             )
             for r in col_rows
         ]
-
         cur.execute(
             "SELECT ic.INDEX_NAME, ic.COLUMN_NAME, i.UNIQUENESS "
             "FROM USER_IND_COLUMNS ic JOIN USER_INDEXES i ON i.INDEX_NAME = ic.INDEX_NAME "
@@ -295,7 +314,11 @@ class OracleDriver:
             rd = dict(zip(idx_desc, r))
             n = rd["index_name"]
             if n not in idx_map:
-                idx_map[n] = {"name": n, "unique": rd.get("uniqueness") == "UNIQUE", "columns": []}
+                idx_map[n] = {
+                    "name": n,
+                    "unique": rd.get("uniqueness") == "UNIQUE",
+                    "columns": [],
+                }
             idx_map[n]["columns"].append(rd["column_name"])
             indexed_cols.add(rd["column_name"])
         indexes = list(idx_map.values())
@@ -313,94 +336,36 @@ class OracleDriver:
         table_comment = str((meta or (0, ""))[1] or "")
         cur.close()
         return SchemaSnapshot(
-            db_type="oracle", database=ds.database, target=target,
-            description=table_comment, fields=fields, indexes=indexes, sample_count=sample_count,
-        )
-
-    async def _fetch_schema_impl_async(self, cursor, ds: DataSource, target: str | None) -> SchemaSnapshot | list[SchemaSnapshot]:
-        """异步版 schema 拉取（Thin mode 专用）。"""
-        if target is None:
-            await cursor.execute(
-                "SELECT t.TABLE_NAME, c.COMMENTS "
-                "FROM USER_TABLES t "
-                "LEFT JOIN USER_TAB_COMMENTS c ON c.TABLE_NAME = t.TABLE_NAME "
-                "ORDER BY t.TABLE_NAME"
-            )
-            rows = await cursor.fetchall()
-            col_names = [col[0].lower() for col in cursor.description]
-            await cursor.close()
-            return [
-                SchemaSnapshot(
-                    db_type="oracle", database=ds.database,
-                    target=dict(zip(col_names, r))["table_name"],
-                    description=dict(zip(col_names, r)).get("comments") or "",
-                    fields=[], indexes=[], sample_count=0,
-                )
-                for r in rows
-            ]
-        # single table
-        target_upper = target.upper()
-        await cursor.execute(
-            "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.NULLABLE, cm.COMMENTS "
-            "FROM USER_TAB_COLUMNS c "
-            "LEFT JOIN USER_COL_COMMENTS cm "
-            "       ON cm.TABLE_NAME = c.TABLE_NAME AND cm.COLUMN_NAME = c.COLUMN_NAME "
-            "WHERE c.TABLE_NAME = :tbl ORDER BY c.COLUMN_ID",
-            tbl=target_upper,
-        )
-        col_rows = await cursor.fetchall()
-        col_desc = [col[0].lower() for col in cursor.description]
-        fields: list[FieldDef] = [
-            FieldDef(
-                name=dict(zip(col_desc, r))["column_name"],
-                type=dict(zip(col_desc, r))["data_type"],
-                description=dict(zip(col_desc, r)).get("comments") or "",
-                indexed=False, nullable=dict(zip(col_desc, r)).get("nullable", "Y") == "Y",
-            )
-            for r in col_rows
-        ]
-        await cursor.execute(
-            "SELECT ic.INDEX_NAME, ic.COLUMN_NAME, i.UNIQUENESS "
-            "FROM USER_IND_COLUMNS ic JOIN USER_INDEXES i ON i.INDEX_NAME = ic.INDEX_NAME "
-            "WHERE ic.TABLE_NAME = :tbl ORDER BY ic.INDEX_NAME, ic.COLUMN_POSITION",
-            tbl=target_upper,
-        )
-        idx_rows = await cursor.fetchall()
-        idx_desc = [col[0].lower() for col in cursor.description]
-        idx_map: dict[str, dict] = {}
-        indexed_cols: set[str] = set()
-        for r in idx_rows:
-            rd = dict(zip(idx_desc, r))
-            n = rd["index_name"]
-            if n not in idx_map:
-                idx_map[n] = {"name": n, "unique": rd.get("uniqueness") == "UNIQUE", "columns": []}
-            idx_map[n]["columns"].append(rd["column_name"])
-            indexed_cols.add(rd["column_name"])
-        indexes = list(idx_map.values())
-        for f in fields:
-            f["indexed"] = f["name"] in indexed_cols
-        await cursor.execute(
-            "SELECT NVL(NUM_ROWS, 0), "
-            "(SELECT COMMENTS FROM USER_TAB_COMMENTS WHERE TABLE_NAME = :tbl) "
-            "FROM USER_TABLES WHERE TABLE_NAME = :tbl",
-            tbl=target_upper,
-        )
-        meta = await cursor.fetchone()
-        sample_count = int((meta or (0, ""))[0] or 0)
-        table_comment = str((meta or (0, ""))[1] or "")
-        await cursor.close()
-        return SchemaSnapshot(
-            db_type="oracle", database=ds.database, target=target,
-            description=table_comment, fields=fields, indexes=indexes, sample_count=sample_count,
+            db_type="oracle",
+            database=ds.database,
+            target=target,
+            description=table_comment,
+            fields=fields,
+            indexes=indexes,
+            sample_count=sample_count,
         )
 
     # ── inspect_values ────────────────────────────────────────
 
-    async def inspect_values(self, ds: DataSource, target: str, field: str, limit: int = 10) -> list[dict]:
-        log.info("[oracle_driver] inspect_values ds=%s target=%s field=%s", ds.id, target, field)
+    async def inspect_values(
+        self,
+        ds: DataSource,
+        target: str,
+        field: str,
+        limit: int = 10,
+    ) -> list[dict]:
+        log.info(
+            "[oracle_driver] inspect_values ds=%s target=%s field=%s",
+            ds.id,
+            target,
+            field,
+        )
         for name, val in [("字段", field), ("表", target)]:
             if not _SAFE_IDENT_RE.match(val):
-                raise UnsafeQueryError(f"{name}名不合法: {val!r}", suggestion=f"{name}名仅允许字母/数字/下划线/中文")
+                raise UnsafeQueryError(
+                    f"{name}名不合法: {val!r}",
+                    suggestion=f"{name}名仅允许字母/数字/下划线/中文",
+                )
         sql = (
             f'SELECT * FROM ('
             f'  SELECT "{field.upper()}" AS val, COUNT(*) AS cnt '
@@ -429,20 +394,32 @@ class OracleDriver:
     async def estimate_cost(self, ds: DataSource, target: str, query: dict) -> CostEstimate:
         sql = query.get("sql", "")
         if not sql:
-            raise PayloadShapeMismatchError("estimate_cost 需要 query.sql", suggestion="payload 必须包含 'sql' key")
+            raise PayloadShapeMismatchError(
+                "estimate_cost 需要 query.sql",
+                suggestion="payload 必须包含 'sql' key",
+            )
         try:
             stmt_id = uuid.uuid4().hex[:16]
+            explain_sql = (
+                "EXPLAIN PLAN SET STATEMENT_ID = "
+                f"'{stmt_id}' FOR {_normalize_sql(sql)}"
+            )
+            plan_rows_sql = (
+                "SELECT NVL(SUM(CARDINALITY), 0) FROM PLAN_TABLE "
+                "WHERE STATEMENT_ID = :sid"
+            )
+            delete_plan_sql = "DELETE FROM PLAN_TABLE WHERE STATEMENT_ID = :sid"
             if _is_thick():
                 def _sync():
                     pool = self._get_sync_pool(ds)
                     with pool.acquire() as conn:
                         cur = conn.cursor()
-                        cur.execute(f"EXPLAIN PLAN SET STATEMENT_ID = '{stmt_id}' FOR {_normalize_sql(sql)}")  # noqa: S608
-                        cur.execute("SELECT NVL(SUM(CARDINALITY), 0) FROM PLAN_TABLE WHERE STATEMENT_ID = :sid", sid=stmt_id)
+                        cur.execute(explain_sql)  # noqa: S608
+                        cur.execute(plan_rows_sql, sid=stmt_id)
                         row = cur.fetchone()
                         estimated = int((row or (0,))[0] or 0)
                         try:
-                            cur.execute("DELETE FROM PLAN_TABLE WHERE STATEMENT_ID = :sid", sid=stmt_id)
+                            cur.execute(delete_plan_sql, sid=stmt_id)
                             conn.commit()
                         except Exception:
                             pass
@@ -452,12 +429,12 @@ class OracleDriver:
                 pool = await self._get_async_pool(ds)
                 async with pool.acquire() as conn:
                     cur = conn.cursor()
-                    await cur.execute(f"EXPLAIN PLAN SET STATEMENT_ID = '{stmt_id}' FOR {_normalize_sql(sql)}")  # noqa: S608
-                    await cur.execute("SELECT NVL(SUM(CARDINALITY), 0) FROM PLAN_TABLE WHERE STATEMENT_ID = :sid", sid=stmt_id)
+                    await cur.execute(explain_sql)  # noqa: S608
+                    await cur.execute(plan_rows_sql, sid=stmt_id)
                     row = await cur.fetchone()
                     estimated_rows = int((row or (0,))[0] or 0)
                     try:
-                        await cur.execute("DELETE FROM PLAN_TABLE WHERE STATEMENT_ID = :sid", sid=stmt_id)
+                        await cur.execute(delete_plan_sql, sid=stmt_id)
                         await conn.commit()
                     except Exception:
                         pass
@@ -467,21 +444,55 @@ class OracleDriver:
                 level = "high"
             else:
                 level = "ok"
-            return CostEstimate(estimated_rows=estimated_rows, warning_level=level, raw_explain={"rows": estimated_rows})
+            return CostEstimate(
+                estimated_rows=estimated_rows,
+                warning_level=level,
+                raw_explain={"rows": estimated_rows},
+            )
         except Exception as exc:
-            log.warning("[oracle_driver] estimate_cost fallback ds=%s: %s", ds.id, exc)
-            return CostEstimate(estimated_rows=0, warning_level="ok", raw_explain={"error": str(exc)[:200], "note": "EXPLAIN PLAN 不可用"})
+            # EXPLAIN PLAN 失败（常见原因：只读账号无 PLAN_TABLE 写权限）。
+            # 无法估算 ≠ 低成本：返回 warning_level="high" 让调用方保守处理，
+            # degraded=True 供调用方区分"真高成本"与"估算降级"。
+            # 注意：执行层 ROWNUM 只截断最终结果行数，ORDER BY / GROUP BY / 聚合
+            # 等场景仍可能先做大扫描或排序，再被外层 ROWNUM 截断，不能作为成本兜底。
+            log.warning(
+                "[oracle_driver] estimate_cost degraded ds=%s: %s "
+                "(EXPLAIN PLAN 不可用，返回 warning_level=high 让调用方保守处理)",
+                ds.id, exc,
+            )
+            return CostEstimate(
+                estimated_rows=0,
+                warning_level="high",
+                raw_explain={
+                    "error": str(exc)[:200],
+                    "degraded": True,
+                    "note": "EXPLAIN PLAN 不可用",
+                },
+            )
 
     # ── execute_query ─────────────────────────────────────────
 
     async def execute_query(
-        self, ds: DataSource, target: str, query: dict,
-        mode: ExecuteMode = "single", batch_size: int = 1000,  # noqa: hardcode
+        self,
+        ds: DataSource,
+        target: str,
+        query: dict,
+        mode: ExecuteMode = "single",
+        batch_size: int = 1000,
     ) -> ExecuteResult:
-        log.info("[oracle_driver] execute_query ds=%s target=%s mode=%s thick=%s", ds.id, target, mode, _is_thick())
+        log.info(
+            "[oracle_driver] execute_query ds=%s target=%s mode=%s thick=%s",
+            ds.id,
+            target,
+            mode,
+            _is_thick(),
+        )
         sql = query.get("sql")
         if not sql:
-            raise PayloadShapeMismatchError("execute_query 需要 query.sql", suggestion="payload 必须包含 'sql' key")
+            raise PayloadShapeMismatchError(
+                "execute_query 需要 query.sql",
+                suggestion="payload 必须包含 'sql' key",
+            )
         self._enforce_select_only(sql)
         sql = self._wrap_by_mode(sql, mode, batch_size)
 
@@ -509,7 +520,10 @@ class OracleDriver:
             try:
                 async with pool.acquire() as conn:
                     cur = conn.cursor()
-                    await asyncio.wait_for(cur.execute(sql), timeout=settings.oracle_query_timeout_secs)
+                    await asyncio.wait_for(
+                        cur.execute(sql),
+                        timeout=settings.oracle_query_timeout_secs,
+                    )
                     rows_raw = await cur.fetchall()
                     rows = _cursor_to_dicts(cur, rows_raw)
                     cur.close()  # close() 是同步方法，不能 await
@@ -520,10 +534,22 @@ class OracleDriver:
                 ) from exc
 
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
-        truncated = (mode == "single" and len(rows) >= settings.query_row_limit) or \
-                    (mode == "render" and len(rows) >= settings.render_row_limit)
-        log.info("[oracle_driver] execute_query done ds=%s rows=%d elapsed_ms=%d", ds.id, len(rows), elapsed_ms)
-        return ExecuteResult(rows=rows, row_count=len(rows), truncated=truncated, elapsed_ms=elapsed_ms)
+        truncated = (
+            (mode == "single" and len(rows) >= settings.query_row_limit)
+            or (mode == "render" and len(rows) >= settings.render_row_limit)
+        )
+        log.info(
+            "[oracle_driver] execute_query done ds=%s rows=%d elapsed_ms=%d",
+            ds.id,
+            len(rows),
+            elapsed_ms,
+        )
+        return ExecuteResult(
+            rows=rows,
+            row_count=len(rows),
+            truncated=truncated,
+            elapsed_ms=elapsed_ms,
+        )
 
     # ── health_check ──────────────────────────────────────────
 
@@ -569,9 +595,17 @@ class OracleDriver:
                     p["connected"] = True
                     cur = conn.cursor()
                     for stmt, key, extractor in [
-                        ("SELECT BANNER FROM V$VERSION WHERE ROWNUM = 1", "version", lambda r: str(r[0])),
+                        (
+                            "SELECT BANNER FROM V$VERSION WHERE ROWNUM = 1",
+                            "version",
+                            lambda r: str(r[0]),
+                        ),
                         ("SELECT USER FROM DUAL", "schema", lambda r: str(r[0])),
-                        ("SELECT COUNT(*) FROM USER_TABLES", "object_count", lambda r: int(r[0] or 0)),
+                        (
+                            "SELECT COUNT(*) FROM USER_TABLES",
+                            "object_count",
+                            lambda r: int(r[0] or 0),
+                        ),
                     ]:
                         try:
                             cur.execute(stmt)
@@ -594,19 +628,28 @@ class OracleDriver:
             return await self._run_in_executor(_sync_profile)
 
         # Thin mode
+        # connect_async() 返回 AsyncConnection，其 __await__ 才是真正的连接协程；
+        # 不 await 则对象未连接，所有查询均报 DPY-1001: not connected to database。
         conn = None
         try:
-            # connect_async 是同步函数，返回 AsyncConnection 对象，不能 await
-            conn = oracledb.connect_async(
+            conn = await oracledb.connect_async(
                 user=ds.username, password=ds.password, dsn=dsn,
                 tcp_connect_timeout=settings.oracle_connect_timeout_secs,
             )
             profile["connected"] = True
             cur = conn.cursor()
             for stmt, key, extractor in [
-                ("SELECT BANNER FROM V$VERSION WHERE ROWNUM = 1", "version", lambda r: str(r[0])),
+                (
+                    "SELECT BANNER FROM V$VERSION WHERE ROWNUM = 1",
+                    "version",
+                    lambda r: str(r[0]),
+                ),
                 ("SELECT USER FROM DUAL", "schema", lambda r: str(r[0])),
-                ("SELECT COUNT(*) FROM USER_TABLES", "object_count", lambda r: int(r[0] or 0)),
+                (
+                    "SELECT COUNT(*) FROM USER_TABLES",
+                    "object_count",
+                    lambda r: int(r[0] or 0),
+                ),
             ]:
                 try:
                     await cur.execute(stmt)
@@ -672,7 +715,10 @@ class OracleDriver:
             raise UnsafeQueryError("禁止多语句执行", suggestion="每次只允许一条 SQL")
         stmt_type = parsed[0].get_type()  # type: ignore[index]
         if stmt_type and stmt_type.upper() != "SELECT":
-            raise UnsafeQueryError(f"仅允许 SELECT，检测到: {stmt_type}", suggestion="移除非查询语句")
+            raise UnsafeQueryError(
+                f"仅允许 SELECT，检测到: {stmt_type}",
+                suggestion="移除非查询语句",
+            )
         if _DML_DDL_KEYWORDS.search(normalized):
             raise UnsafeQueryError("SQL 包含禁止的 DML/DDL 关键字", suggestion="仅允许 SELECT 查询")
 
@@ -686,7 +732,7 @@ class OracleDriver:
         if mode == "render":
             return _rownum_wrap(base, settings.render_row_limit)
         if mode == "probe":
-            return normalized if has_limit else _rownum_wrap(normalized, 10)  # noqa: hardcode
+            return normalized if has_limit else _rownum_wrap(normalized, 10)
         if mode == "batched":
             return normalized if has_limit else _rownum_wrap(normalized, batch_size)
         return normalized if has_limit else _rownum_wrap(normalized, settings.query_row_limit)
