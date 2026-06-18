@@ -3,6 +3,7 @@
 """
 
 import asyncio
+import importlib
 import json
 import re as _re
 import time
@@ -176,7 +177,7 @@ def _collect_referenced_sql_tables(
     jpa_entities: list[dict],
     coll_to_db: dict[str, str],
 ) -> set[str]:
-    """聚合本 repo 引用的 SQL 型表名 (MySQL / Oracle) — 给 refresh_driver_canonicals 收窄 introspect 范围.
+    """聚合本 repo 引用的 SQL 型表名，收窄 refresh_driver_canonicals 范围.
 
     信号:
         - mybatis: SELECT entry 的 SQL 中 FROM/JOIN 命中的表
@@ -185,6 +186,13 @@ def _collect_referenced_sql_tables(
     返回空集 → 本 repo 与 SQL 型数据源无关, refresh_driver_canonicals 早返 0 noop.
     """
     tables: set[str] = set()
+    coll_key_by_casefold = {name.casefold(): name for name in coll_to_db}
+
+    def _resolve_table_name(name: str) -> str | None:
+        if name in coll_to_db:
+            return name
+        return coll_key_by_casefold.get(name.casefold())
+
     for entry in mybatis_entries or []:
         if (entry.get("type") or "").lower() != "select":
             continue
@@ -192,12 +200,12 @@ def _collect_referenced_sql_tables(
         if not sql:
             continue
         for tbl in _re.findall(r"\b(?:FROM|JOIN)\s+([\w_]+)", sql, _re.IGNORECASE):
-            if tbl in coll_to_db:
-                tables.add(tbl)
+            if resolved := _resolve_table_name(tbl):
+                tables.add(resolved)
     for entity in jpa_entities or []:
         tbl = entity.get("table_name") or entity.get("table") or ""
-        if tbl and tbl in coll_to_db:
-            tables.add(tbl)
+        if tbl and (resolved := _resolve_table_name(tbl)):
+            tables.add(resolved)
     return tables
 
 
@@ -295,7 +303,7 @@ async def run_training_pipeline_with_progress(
                     conn = pymysql.connect(
                         host=ds.host, port=ds.port, database=ds.database,
                         user=ds.username, password=ds.password,
-                        connect_timeout=settings.datasource_connect_timeout_ms // 1000,  # noqa: hardcode
+                        connect_timeout=settings.datasource_connect_timeout_ms // 1000,
                     )
                     with conn.cursor() as cur:
                         cur.execute("SHOW TABLES")
@@ -307,8 +315,9 @@ async def run_training_pipeline_with_progress(
                 elif ds.db_type == "oracle":
                     # 导入 OracleDriver 模块确保 _maybe_init_thick_mode() 已执行
                     # （IS_ORACLE_THICK_MODE_LIB_DIR 非空时必须先 init_oracle_client）
-                    import app.engine.drivers.oracle as _oracle_mod  # noqa: F401
                     import oracledb  # type: ignore[import-untyped]
+
+                    importlib.import_module("app.engine.drivers.oracle")
                     dsn = f"{ds.host}:{ds.port}/{ds.database}"
                     conn = oracledb.connect(
                         user=ds.username,
@@ -456,7 +465,7 @@ async def run_training_pipeline_with_progress(
     # 术语抽取改为用户手动触发 (POST /api/namespaces/{ns_id}/terminology/refresh),
     # 解决 SCO description 冲突未解决时术语质量低的时序问题.
 
-    await on_progress(100, "完成")  # noqa: hardcode
+    await on_progress(100, "完成")
 
     total = time.time() - start
     log.info("[%s] 训练管道完成 repo_id=%d 总耗时 %.1fs score=%d",

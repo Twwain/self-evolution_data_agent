@@ -23,6 +23,21 @@ from app.models import SchemaCanonicalObject
 log = logging.getLogger(__name__)
 
 
+def _is_referenced_target(
+    db_type: str,
+    target: str,
+    referenced_targets: set[str],
+    referenced_target_keys: set[str] | None = None,
+) -> bool:
+    """表名过滤: exact 优先，Oracle 额外做大小写无关匹配."""
+    if target in referenced_targets:
+        return True
+    if db_type != "oracle":
+        return False
+    keys = referenced_target_keys or {item.casefold() for item in referenced_targets}
+    return target.casefold() in keys
+
+
 async def get_schema_canonical(
     db: AsyncSession,
     namespace_id: int,
@@ -140,6 +155,11 @@ async def refresh_driver_canonicals(
 
     if referenced_targets is not None and not referenced_targets:
         return 0
+    referenced_target_keys = (
+        {target.casefold() for target in referenced_targets}
+        if db_type == "oracle" and referenced_targets is not None
+        else None
+    )
 
     ds_stmt = sa_select(DataSource).where(
         DataSource.namespace_id == namespace_id,
@@ -163,7 +183,12 @@ async def refresh_driver_canonicals(
 
             for table_stub in schemas:
                 target = table_stub["target"]
-                if referenced_targets is not None and target not in referenced_targets:
+                if referenced_targets is not None and not _is_referenced_target(
+                    db_type,
+                    target,
+                    referenced_targets,
+                    referenced_target_keys,
+                ):
                     continue
                 detail = await driver.fetch_schema(ds, target=target)
                 if isinstance(detail, list):

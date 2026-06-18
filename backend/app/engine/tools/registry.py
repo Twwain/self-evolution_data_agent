@@ -252,7 +252,8 @@ TOOL_SPECS: list[dict] = [
                 "query": {
                     "type": "object",
                     "description": (
-                        "查询载荷. MySQL/Oracle: {sql:'SELECT...'} (Oracle 用 Oracle SQL 方言, 不支持 LIMIT), "
+                        "查询载荷. MySQL/Oracle: {sql:'SELECT...'}. "
+                        "Oracle 用 Oracle SQL 方言, 不支持 LIMIT. "
                         "MongoDB: {pipeline:[...]} 或 {filter:{...}}"
                     ),
                 },
@@ -510,7 +511,8 @@ server_capabilities 三类限制 (unsupported_ops / unsupported_stage_variants /
 - db_type 从锚点 `[...]` 读, 不要猜
 - query 字段形态由 db_type 决定: \
 MySQL 用 {{sql: "SELECT ... LIMIT n"}}, \
-Oracle 用 {{sql: "SELECT ..."}} (Oracle SQL 方言, 不支持 LIMIT; 行数保护用 FETCH FIRST n ROWS ONLY 或不写, 执行层自动包装), \
+Oracle 用 {{sql: "SELECT ..."}} (Oracle SQL 方言, 不支持 LIMIT; \
+行数保护用 FETCH FIRST n ROWS ONLY 或不写, 执行层自动包装), \
 MongoDB 用 {{pipeline: [...]}} 或 {{filter: {{...}}}}
 - 结果中的 DBRef 字段呈现为 {{$ref: 目标集合名, $id_str: 目标记录ID字符串}}; \
 需关联时取 $id_str 当普通字符串匹配目标集合的关联字段.

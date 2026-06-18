@@ -64,9 +64,12 @@ Goal: 产出一个合法 Plan — 每步绑定一个 (db_type, database, collect
 按 step 的 db_type 选查询形态:
 - db_type="mongodb": operation ∈ {aggregate, find, count_documents}; 用 "pipeline" (aggregate) 或 "query" (find/count). 末尾加 $limit.
 - db_type="mysql": operation="sql"; 用 "query": {"sql": "SELECT ... LIMIT n"}. 只允许 SELECT.
-- db_type="oracle": operation="sql"; 用 "query": {"sql": "SELECT ..."}, 使用 Oracle SQL 方言. 只允许 SELECT.
-  ⚠ Oracle 不支持 MySQL 的 LIMIT 语法. 如需行数限制, 用 FETCH FIRST n ROWS ONLY 或 WHERE ROWNUM <= n.
-  但执行层会自动包装行数保护, 不强制要求 SQL 内写 ROWNUM; 若 LLM 写了则执行层会在 render/count 路径剥离并覆盖.
+- db_type="oracle": operation="sql"; 用 "query": {"sql": "SELECT ..."}.
+  使用 Oracle SQL 方言. 只允许 SELECT.
+  Oracle 不支持 MySQL 的 LIMIT 语法. 如需行数限制,
+  用 FETCH FIRST n ROWS ONLY 或 WHERE ROWNUM <= n.
+  执行层会自动包装行数保护, 不强制要求 SQL 内写 ROWNUM;
+  若 LLM 写了则执行层会在 render/count 路径剥离并覆盖.
 每步在 "exports" 声明要传给后续步骤的字段名.
 </step_shape>
 
@@ -136,7 +139,7 @@ Goal: 产出一个合法 Plan — 每步绑定一个 (db_type, database, collect
       "database": "sales_svc",
       "collection": "ORDERS",
       "operation": "sql",
-      "query": {"sql": "SELECT ORDER_DATE, SUM(AMOUNT) AS total FROM ORDERS WHERE STATUS = 1 GROUP BY ORDER_DATE ORDER BY ORDER_DATE"},
+      "query": {"sql": "SELECT ORDER_DATE, SUM(AMOUNT) AS total FROM ORDERS"},
       "exports": ["ORDER_DATE", "total"]
     }
   ],
@@ -168,10 +171,14 @@ Goal: 产出一个合法 Plan — 每步绑定一个 (db_type, database, collect
 
 【规则】
 1. 跨 database 或跨 db_type 必须 multi_step (一步一库); 同 mongodb 库可 single_aggregate + $lookup
-2. 每步必须有行数保护: mongodb 末尾 $limit, mysql 的 SQL 带 LIMIT n, oracle 的 SQL 带 FETCH FIRST n ROWS ONLY 或交执行层包装
+2. 每步必须有行数保护: mongodb 末尾 $limit,
+   mysql 的 SQL 带 LIMIT n,
+   oracle 的 SQL 带 FETCH FIRST n ROWS ONLY 或交执行层包装
 3. 变量引用 "{{step<N>.<varName>}}" 的 varName 必须在 step N 的 exports 中
-4. 前一步结果传给下一步: mongodb 用 $group+$push 或 $project 导出字段; mysql 用 SELECT 列名导出, 都在 exports 声明
-5. 业务规则必须落到查询条件. 枚举值含义以输入的 knowledge/rules 为准, 不要凭字面猜 (例: rules 写 "status=1 表示有效", 仅取有效用 status=1)
+4. 前一步结果传给下一步: mongodb 用 $group+$push 或 $project 导出字段;
+   mysql 用 SELECT 列名导出, 都在 exports 声明
+5. 业务规则必须落到查询条件. 枚举值含义以输入的 knowledge/rules 为准,
+   不要凭字面猜 (例: rules 写 "status=1 表示有效", 仅取有效用 status=1)
 6. 字段名/表名大小写严格按 schemas, 不要猜
 7. 最后一步结果是要给用户展示的数据, 其他步骤只是中间数据
 8. step_idx 从 1 开始连续递增, 与 {{stepN.xxx}} 的 N 对齐

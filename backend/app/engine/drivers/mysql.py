@@ -421,7 +421,7 @@ class MySQLDriver:
             )
 
     def strip_outer_row_limit(self, sql: str) -> str:
-        """公开行数保护剥离方法 (SqlDataSourceDriver 协议), 供 plan_executor render/count 路径调用."""
+        """公开行数保护剥离方法，供 plan_executor render/count 路径调用."""
         return self._strip_outer_limit(sql)
 
     @staticmethod

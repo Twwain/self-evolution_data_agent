@@ -367,8 +367,18 @@ async def test_execute_plan_mongo_to_oracle_var_injection():
 
     step1 = _step(idx=1, db="catalog_db", db_type="mongodb", op="aggregate",
                   pipeline=[{"$project": {"cust_id": 1}}], exports=["cust_id"])
-    step2 = _step(idx=2, db="sales_db", db_type="oracle", op="sql",
-                  query={"sql": "SELECT SUM(AMOUNT) AS total FROM ORDERS WHERE CUST_ID IN ({{step1.cust_id}})"})
+    step2 = _step(
+        idx=2,
+        db="sales_db",
+        db_type="oracle",
+        op="sql",
+        query={
+            "sql": (
+                "SELECT SUM(AMOUNT) AS total FROM ORDERS "
+                "WHERE CUST_ID IN ({{step1.cust_id}})"
+            )
+        },
+    )
     plan = QueryPlan(strategy="multi_step", steps=[step1, step2])
 
     with patch("app.engine.tools._resolve_ds.resolve_ds", new=AsyncMock(return_value=_mock_ds())), \
@@ -390,7 +400,10 @@ async def test_execute_plan_unknown_db_type_raises_not_mongo():
                      query={"sql": "SELECT 1"})],
     )
     with patch("app.engine.tools._resolve_ds.resolve_ds", new=AsyncMock(return_value=_mock_ds())), \
-         patch("app.engine.drivers.get_driver", side_effect=UnsupportedDataSourceTypeError("postgresql")):
+         patch(
+             "app.engine.drivers.get_driver",
+             side_effect=UnsupportedDataSourceTypeError("postgresql"),
+         ):
         with pytest.raises(PlanExecutionError) as ei:
             await execute_plan(plan, slug="ns", ns_id=1)
     # PlanExecutionError 包裹了 UnsupportedDataSourceTypeError
