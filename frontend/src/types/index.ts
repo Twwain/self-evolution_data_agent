@@ -10,9 +10,12 @@ export interface Namespace {
   created_at: string;
 }
 
+/** 所有支持的数据库类型 — 全局唯一定义, 组件/API 通过此类型而非散落的 union */
+export type DbType = "mysql" | "mongodb" | "oracle";
+
 export interface DataSource {
   id: number;
-  db_type: "mysql" | "mongodb";
+  db_type: DbType;
   host: string;
   port: number;
   database: string;

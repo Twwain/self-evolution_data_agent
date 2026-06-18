@@ -420,6 +420,10 @@ class MySQLDriver:
                 suggestion="仅允许 SELECT 查询",
             )
 
+    def strip_outer_row_limit(self, sql: str) -> str:
+        """公开行数保护剥离方法，供 plan_executor render/count 路径调用."""
+        return self._strip_outer_limit(sql)
+
     @staticmethod
     def _strip_outer_limit(sql: str) -> str:
         """剥离末尾外层 LIMIT/LIMIT a,b/OFFSET (planner 末步行保护).

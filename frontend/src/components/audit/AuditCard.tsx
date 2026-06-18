@@ -49,7 +49,7 @@ function TerminologyRouting({ payload }: { payload: Record<string, unknown> | nu
   return (
     <div style={{ marginBottom: 8, fontSize: 12 }}>
       <Space size="small" wrap>
-        {dbType && <Tag color={dbType === "mongodb" ? "geekblue" : "purple"}>{dbType}</Tag>}
+        {dbType && <Tag color={dbType === "mongodb" ? "geekblue" : dbType === "oracle" ? "red" : "purple"}>{dbType}</Tag>}
         {db && <Text type="secondary">database: <Text code>{db}</Text></Text>}
         {coll && <Text type="secondary">collection: <Text code>{coll}</Text></Text>}
       </Space>

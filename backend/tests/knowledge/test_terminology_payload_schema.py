@@ -59,9 +59,16 @@ def test_db_type_required():
         TerminologyPayload(**payload)
 
 
+def test_db_type_oracle_accepted():
+    """oracle 是合法的 db_type，应通过校验."""
+    p = TerminologyPayload(**{**VALID, "db_type": "oracle"})
+    assert p.db_type == "oracle"
+
+
 def test_db_type_invalid_value():
+    """未支持的类型（如 postgresql）应被拒绝."""
     with pytest.raises(ValidationError):
-        TerminologyPayload(**{**VALID, "db_type": "oracle"})
+        TerminologyPayload(**{**VALID, "db_type": "postgresql"})
 
 
 def test_synonyms_too_long_rejected():

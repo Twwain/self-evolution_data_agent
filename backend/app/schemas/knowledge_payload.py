@@ -18,7 +18,7 @@ class TerminologyPayload(BaseModel):
     term: str
     primary_collection: str
     primary_database: str
-    db_type: Literal["mysql", "mongodb"]
+    db_type: Literal["mysql", "mongodb", "oracle"]
     primary_field: str | None = None
     synonyms: list[str] = []
     source_collections: list[str] = []

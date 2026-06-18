@@ -74,7 +74,7 @@ class NamespaceDeletePreview(BaseModel):
 # ════════════════════════════════════════════
 
 class DataSourceCreate(BaseModel):
-    db_type: str = Field(pattern=r"^(mysql|mongodb)$")
+    db_type: str = Field(pattern=r"^(mysql|mongodb|oracle)$")
     host: str
     port: int
     database: str

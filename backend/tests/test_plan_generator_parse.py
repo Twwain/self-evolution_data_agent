@@ -104,6 +104,50 @@ def test_mysql_step_missing_sql_rejected():
         _parse_plan(_raw(plan))
 
 
+def test_oracle_step_db_type_flows_through():
+    """Oracle SQL step 应正常解析, db_type/operation 流通."""
+    plan = {
+        "strategy": "single_aggregate",
+        "steps": [{
+            "step_idx": 1, "db_type": "oracle",
+            "database": "sales_svc", "collection": "ORDERS",
+            "operation": "sql",
+            "query": {"sql": "SELECT ORDER_DATE, SUM(AMOUNT) FROM ORDERS GROUP BY ORDER_DATE"},
+            "exports": ["ORDER_DATE", "SUM(AMOUNT)"],
+        }],
+    }
+    qp = _parse_plan(_raw(plan))
+    assert qp.steps[0].db_type == "oracle"
+    assert qp.steps[0].operation == "sql"
+
+
+def test_oracle_non_sql_operation_rejected():
+    """Oracle step 给 operation=aggregate → 不在白名单."""
+    plan = {
+        "strategy": "single_aggregate",
+        "steps": [{
+            "step_idx": 1, "db_type": "oracle",
+            "database": "d", "collection": "T",
+            "operation": "aggregate", "pipeline": [],
+        }],
+    }
+    with pytest.raises(PlanGenerationError):
+        _parse_plan(_raw(plan))
+
+
+def test_oracle_step_missing_sql_rejected():
+    plan = {
+        "strategy": "single_aggregate",
+        "steps": [{
+            "step_idx": 1, "db_type": "oracle",
+            "database": "d", "collection": "T",
+            "operation": "sql", "query": {},
+        }],
+    }
+    with pytest.raises(PlanGenerationError):
+        _parse_plan(_raw(plan))
+
+
 def test_unknown_db_type_rejected():
     plan = {
         "strategy": "single_aggregate",
