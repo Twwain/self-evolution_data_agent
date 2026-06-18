@@ -354,11 +354,10 @@ class OracleDriver:
         field: str,
         limit: int = 10,
     ) -> list[dict]:
+        """Thick/Thin 统一走 executor + sync pool, 消除双份实现。"""
         log.info(
             "[oracle_driver] inspect_values ds=%s target=%s field=%s",
-            ds.id,
-            target,
-            field,
+            ds.id, target, field,
         )
         for name, val in [("字段", field), ("表", target)]:
             if not _SAFE_IDENT_RE.match(val):
@@ -366,6 +365,11 @@ class OracleDriver:
                     f"{name}名不合法: {val!r}",
                     suggestion=f"{name}名仅允许字母/数字/下划线/中文",
                 )
+        return await self._run_in_executor(self._inspect_values_sync, ds, target, field, limit)
+
+    def _inspect_values_sync(
+        self, ds: DataSource, target: str, field: str, limit: int,
+    ) -> list[dict]:
         sql = (
             f'SELECT * FROM ('
             f'  SELECT "{field.upper()}" AS val, COUNT(*) AS cnt '
@@ -373,25 +377,17 @@ class OracleDriver:
             f'  GROUP BY "{field.upper()}" ORDER BY cnt DESC'
             f') WHERE ROWNUM <= :lim'
         )
-        if _is_thick():
-            def _sync():
-                pool = self._get_sync_pool(ds)
-                with pool.acquire() as conn:
-                    cur = conn.cursor()
-                    cur.execute(sql, lim=int(limit))
-                    rows = cur.fetchall()
-                    return _cursor_to_dicts(cur, rows)
-            return await self._run_in_executor(_sync)
-        pool = await self._get_async_pool(ds)
-        async with pool.acquire() as conn:
+        pool = self._get_sync_pool(ds)
+        with pool.acquire() as conn:
             cur = conn.cursor()
-            await cur.execute(sql, lim=int(limit))
-            rows = await cur.fetchall()
+            cur.execute(sql, lim=int(limit))
+            rows = cur.fetchall()
             return _cursor_to_dicts(cur, rows)
 
     # ── estimate_cost ─────────────────────────────────────────
 
     async def estimate_cost(self, ds: DataSource, target: str, query: dict) -> CostEstimate:
+        """Thick/Thin 统一走 executor + sync pool, 消除双份实现。"""
         sql = query.get("sql", "")
         if not sql:
             raise PayloadShapeMismatchError(
@@ -399,45 +395,7 @@ class OracleDriver:
                 suggestion="payload 必须包含 'sql' key",
             )
         try:
-            stmt_id = uuid.uuid4().hex[:16]
-            explain_sql = (
-                "EXPLAIN PLAN SET STATEMENT_ID = "
-                f"'{stmt_id}' FOR {_normalize_sql(sql)}"
-            )
-            plan_rows_sql = (
-                "SELECT NVL(SUM(CARDINALITY), 0) FROM PLAN_TABLE "
-                "WHERE STATEMENT_ID = :sid"
-            )
-            delete_plan_sql = "DELETE FROM PLAN_TABLE WHERE STATEMENT_ID = :sid"
-            if _is_thick():
-                def _sync():
-                    pool = self._get_sync_pool(ds)
-                    with pool.acquire() as conn:
-                        cur = conn.cursor()
-                        cur.execute(explain_sql)  # noqa: S608
-                        cur.execute(plan_rows_sql, sid=stmt_id)
-                        row = cur.fetchone()
-                        estimated = int((row or (0,))[0] or 0)
-                        try:
-                            cur.execute(delete_plan_sql, sid=stmt_id)
-                            conn.commit()
-                        except Exception:
-                            pass
-                        return estimated
-                estimated_rows = await self._run_in_executor(_sync)
-            else:
-                pool = await self._get_async_pool(ds)
-                async with pool.acquire() as conn:
-                    cur = conn.cursor()
-                    await cur.execute(explain_sql)  # noqa: S608
-                    await cur.execute(plan_rows_sql, sid=stmt_id)
-                    row = await cur.fetchone()
-                    estimated_rows = int((row or (0,))[0] or 0)
-                    try:
-                        await cur.execute(delete_plan_sql, sid=stmt_id)
-                        await conn.commit()
-                    except Exception:
-                        pass
+            estimated_rows = await self._run_in_executor(self._estimate_cost_sync, ds, sql)
             if estimated_rows > settings.query_cost_total_limit:
                 level = "blocked"
             elif estimated_rows > settings.query_cost_single_layer_limit:
@@ -450,11 +408,6 @@ class OracleDriver:
                 raw_explain={"rows": estimated_rows},
             )
         except Exception as exc:
-            # EXPLAIN PLAN 失败（常见原因：只读账号无 PLAN_TABLE 写权限）。
-            # 无法估算 ≠ 低成本：返回 warning_level="high" 让调用方保守处理，
-            # degraded=True 供调用方区分"真高成本"与"估算降级"。
-            # 注意：执行层 ROWNUM 只截断最终结果行数，ORDER BY / GROUP BY / 聚合
-            # 等场景仍可能先做大扫描或排序，再被外层 ROWNUM 截断，不能作为成本兜底。
             log.warning(
                 "[oracle_driver] estimate_cost degraded ds=%s: %s "
                 "(EXPLAIN PLAN 不可用，返回 warning_level=high 让调用方保守处理)",
@@ -470,6 +423,31 @@ class OracleDriver:
                 },
             )
 
+    def _estimate_cost_sync(self, ds: DataSource, sql: str) -> int:
+        stmt_id = uuid.uuid4().hex[:16]
+        explain_sql = (
+            "EXPLAIN PLAN SET STATEMENT_ID = "
+            f"'{stmt_id}' FOR {_normalize_sql(sql)}"
+        )
+        plan_rows_sql = (
+            "SELECT NVL(SUM(CARDINALITY), 0) FROM PLAN_TABLE "
+            "WHERE STATEMENT_ID = :sid"
+        )
+        delete_plan_sql = "DELETE FROM PLAN_TABLE WHERE STATEMENT_ID = :sid"
+        pool = self._get_sync_pool(ds)
+        with pool.acquire() as conn:
+            cur = conn.cursor()
+            cur.execute(explain_sql)  # noqa: S608
+            cur.execute(plan_rows_sql, sid=stmt_id)
+            row = cur.fetchone()
+            estimated = int((row or (0,))[0] or 0)
+            try:
+                cur.execute(delete_plan_sql, sid=stmt_id)
+                conn.commit()
+            except Exception:
+                pass
+            return estimated
+
     # ── execute_query ─────────────────────────────────────────
 
     async def execute_query(
@@ -480,12 +458,10 @@ class OracleDriver:
         mode: ExecuteMode = "single",
         batch_size: int = 1000,
     ) -> ExecuteResult:
+        """Thick/Thin 统一走 executor + sync pool, 消除双份实现。"""
         log.info(
             "[oracle_driver] execute_query ds=%s target=%s mode=%s thick=%s",
-            ds.id,
-            target,
-            mode,
-            _is_thick(),
+            ds.id, target, mode, _is_thick(),
         )
         sql = query.get("sql")
         if not sql:
@@ -497,41 +473,16 @@ class OracleDriver:
         sql = self._wrap_by_mode(sql, mode, batch_size)
 
         t0 = time.perf_counter()
-        if _is_thick():
-            def _sync() -> list[dict]:  # 只返回 rows，不含 bool
-                pool = self._get_sync_pool(ds)
-                with pool.acquire() as conn:
-                    cur = conn.cursor()
-                    cur.execute(sql)
-                    rows_raw = cur.fetchall()
-                    return _cursor_to_dicts(cur, rows_raw)
-            try:
-                rows = await asyncio.wait_for(
-                    self._run_in_executor(_sync),
-                    timeout=settings.oracle_query_timeout_secs,
-                )
-            except asyncio.TimeoutError as exc:
-                raise QueryTimeoutError(
-                    f"SQL 执行超时 ({settings.oracle_query_timeout_secs}s): {sql[:100]}",
-                    suggestion="优化查询或增加 IS_ORACLE_QUERY_TIMEOUT_SECS",
-                ) from exc
-        else:
-            pool = await self._get_async_pool(ds)
-            try:
-                async with pool.acquire() as conn:
-                    cur = conn.cursor()
-                    await asyncio.wait_for(
-                        cur.execute(sql),
-                        timeout=settings.oracle_query_timeout_secs,
-                    )
-                    rows_raw = await cur.fetchall()
-                    rows = _cursor_to_dicts(cur, rows_raw)
-                    cur.close()  # close() 是同步方法，不能 await
-            except asyncio.TimeoutError as exc:
-                raise QueryTimeoutError(
-                    f"SQL 执行超时 ({settings.oracle_query_timeout_secs}s): {sql[:100]}",
-                    suggestion="优化查询或增加 IS_ORACLE_QUERY_TIMEOUT_SECS",
-                ) from exc
+        try:
+            rows = await asyncio.wait_for(
+                self._run_in_executor(self._execute_query_sync, ds, sql),
+                timeout=settings.oracle_query_timeout_secs,
+            )
+        except asyncio.TimeoutError as exc:
+            raise QueryTimeoutError(
+                f"SQL 执行超时 ({settings.oracle_query_timeout_secs}s): {sql[:100]}",
+                suggestion="优化查询或增加 IS_ORACLE_QUERY_TIMEOUT_SECS",
+            ) from exc
 
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         truncated = (
@@ -540,9 +491,7 @@ class OracleDriver:
         )
         log.info(
             "[oracle_driver] execute_query done ds=%s rows=%d elapsed_ms=%d",
-            ds.id,
-            len(rows),
-            elapsed_ms,
+            ds.id, len(rows), elapsed_ms,
         )
         return ExecuteResult(
             rows=rows,
@@ -551,26 +500,30 @@ class OracleDriver:
             elapsed_ms=elapsed_ms,
         )
 
+    def _execute_query_sync(self, ds: DataSource, sql: str) -> list[dict]:
+        pool = self._get_sync_pool(ds)
+        with pool.acquire() as conn:
+            cur = conn.cursor()
+            cur.execute(sql)
+            rows_raw = cur.fetchall()
+            return _cursor_to_dicts(cur, rows_raw)
+
     # ── health_check ──────────────────────────────────────────
 
     async def health_check(self, ds: DataSource) -> bool:
+        """Thick/Thin 统一走 executor + sync pool, 消除双份实现。"""
         try:
-            if _is_thick():
-                def _sync():
-                    pool = self._get_sync_pool(ds)
-                    with pool.acquire() as conn:
-                        cur = conn.cursor()
-                        cur.execute("SELECT 1 FROM DUAL")
-                        cur.fetchone()
-                await self._run_in_executor(_sync)
-            else:
-                pool = await self._get_async_pool(ds)
-                async with pool.acquire() as conn:
-                    cur = conn.cursor()
-                    await cur.execute("SELECT 1 FROM DUAL")
+            await self._run_in_executor(self._health_check_sync, ds)
             return True
         except Exception:
             return False
+
+    def _health_check_sync(self, ds: DataSource) -> None:
+        pool = self._get_sync_pool(ds)
+        with pool.acquire() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM DUAL")
+            cur.fetchone()
 
     # ── get_server_capabilities ───────────────────────────────
 
@@ -580,95 +533,45 @@ class OracleDriver:
     # ── fetch_db_profile ──────────────────────────────────────
 
     async def fetch_db_profile(self, ds: DataSource) -> dict:
-        """一次性临时连接，不进连接池缓存，降级安全。"""
-        profile: dict = {"profiled_at": local_now().isoformat(), "connected": False}
-        dsn = self._dsn(ds)
-        if _is_thick():
-            def _sync_profile() -> dict:
-                p: dict = {"profiled_at": local_now().isoformat(), "connected": False}
-                conn = None
-                try:
-                    conn = oracledb.connect(
-                        user=ds.username, password=ds.password, dsn=dsn,
-                        tcp_connect_timeout=settings.oracle_connect_timeout_secs,
-                    )
-                    p["connected"] = True
-                    cur = conn.cursor()
-                    for stmt, key, extractor in [
-                        (
-                            "SELECT BANNER FROM V$VERSION WHERE ROWNUM = 1",
-                            "version",
-                            lambda r: str(r[0]),
-                        ),
-                        ("SELECT USER FROM DUAL", "schema", lambda r: str(r[0])),
-                        (
-                            "SELECT COUNT(*) FROM USER_TABLES",
-                            "object_count",
-                            lambda r: int(r[0] or 0),
-                        ),
-                    ]:
-                        try:
-                            cur.execute(stmt)
-                            row = cur.fetchone()
-                            if row:
-                                p[key] = extractor(row)
-                        except Exception:
-                            pass
-                    cur.close()
-                except Exception as exc:
-                    p["error"] = str(exc)[:300]
-                    log.warning("[oracle_driver] fetch_db_profile failed host=%s: %s", ds.host, exc)
-                finally:
-                    if conn:
-                        try:
-                            conn.close()
-                        except Exception:
-                            pass
-                return p
-            return await self._run_in_executor(_sync_profile)
+        """一次性临时连接 (不进连接池), Thick/Thin 统一走 executor。"""
+        return await self._run_in_executor(self._fetch_db_profile_sync, ds)
 
-        # Thin mode
-        # connect_async() 返回 AsyncConnection，其 __await__ 才是真正的连接协程；
-        # 不 await 则对象未连接，所有查询均报 DPY-1001: not connected to database。
+    def _fetch_db_profile_sync(self, ds: DataSource) -> dict:
+        p: dict = {"profiled_at": local_now().isoformat(), "connected": False}
+        dsn = self._dsn(ds)
         conn = None
         try:
-            conn = await oracledb.connect_async(
+            conn = oracledb.connect(
                 user=ds.username, password=ds.password, dsn=dsn,
                 tcp_connect_timeout=settings.oracle_connect_timeout_secs,
             )
-            profile["connected"] = True
+            p["connected"] = True
             cur = conn.cursor()
             for stmt, key, extractor in [
-                (
-                    "SELECT BANNER FROM V$VERSION WHERE ROWNUM = 1",
-                    "version",
-                    lambda r: str(r[0]),
-                ),
+                ("SELECT BANNER FROM V$VERSION WHERE ROWNUM = 1", "version",
+                 lambda r: str(r[0])),
                 ("SELECT USER FROM DUAL", "schema", lambda r: str(r[0])),
-                (
-                    "SELECT COUNT(*) FROM USER_TABLES",
-                    "object_count",
-                    lambda r: int(r[0] or 0),
-                ),
+                ("SELECT COUNT(*) FROM USER_TABLES", "object_count",
+                 lambda r: int(r[0] or 0)),
             ]:
                 try:
-                    await cur.execute(stmt)
-                    row = await cur.fetchone()
+                    cur.execute(stmt)
+                    row = cur.fetchone()
                     if row:
-                        profile[key] = extractor(row)
+                        p[key] = extractor(row)
                 except Exception:
                     pass
-            cur.close()  # close() 是同步方法，不能 await
+            cur.close()
         except Exception as exc:
-            profile["error"] = str(exc)[:300]
+            p["error"] = str(exc)[:300]
             log.warning("[oracle_driver] fetch_db_profile failed host=%s: %s", ds.host, exc)
         finally:
             if conn:
                 try:
-                    await conn.close()
+                    conn.close()
                 except Exception:
                     pass
-        return profile
+        return p
 
     # ── lifecycle ─────────────────────────────────────────────
 

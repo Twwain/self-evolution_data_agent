@@ -31,7 +31,7 @@ def test_create_oracle_db_type_accepted():
     """db_type=oracle 应通过 DataSourceCreate 校验."""
     c = DataSourceCreate(
         db_type="oracle", host="db.example.com", port=1521,
-        database="orclpdb", username="hr", password="Secret1",
+        database="orclpdb", username="hr", password="p1",
     )
     assert c.db_type == "oracle"
     assert c.port == 1521
@@ -42,5 +42,5 @@ def test_create_unsupported_db_type_rejected():
     with pytest.raises(ValidationError):
         DataSourceCreate(
             db_type="postgresql", host="h", port=5432,
-            database="d", username="u", password="Secret1",
+            database="d", username="u", password="p1",
         )

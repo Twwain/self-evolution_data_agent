@@ -21,6 +21,7 @@ test-results/
 .worktrees/
 .claude/
 .kiro/
+.qoder/
 .playwright-mcp/
 tmp/
 backend/verification_report.md
