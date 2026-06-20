@@ -248,16 +248,20 @@ def _parse_plan(raw: str) -> QueryPlan:
 
         query = s.get("query") or {}
         pipeline = s.get("pipeline") or []
-        # 形态校验: SQL 型 (mysql/oracle) 必须有 query.sql; mongodb 必须有 pipeline 或 query
-        from app.engine.db_types import SQL_DB_TYPES as _SQL_DB_TYPES
+        from app.engine.db_types import DOCUMENT_DB_TYPES, SQL_DB_TYPES as _SQL_DB_TYPES
         if db_type in _SQL_DB_TYPES:
             if not isinstance(query, dict) or not (query.get("sql") or "").strip():
                 raise PlanGenerationError(f"step_idx={idx} {db_type} step 缺 query.sql")
-        else:  # mongodb
+        elif db_type in DOCUMENT_DB_TYPES:
             if not pipeline and not query:
                 raise PlanGenerationError(
-                    f"step_idx={idx} mongodb step 缺 pipeline/query"
+                    f"step_idx={idx} {db_type} step 缺 pipeline/query"
                 )
+        else:
+            raise PlanGenerationError(
+                f"step_idx={idx} 不支持的 db_type={db_type!r}, "
+                f"仅支持: {sorted(_SQL_DB_TYPES | DOCUMENT_DB_TYPES)}"
+            )
 
         steps.append(PlanStep(
             step_idx=idx,

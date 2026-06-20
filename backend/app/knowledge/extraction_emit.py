@@ -31,7 +31,8 @@ def validate_emit(data: dict) -> EmitResult:
             )
 
     # paradigm 合法值
-    if data["paradigm"] not in ("relational", "document"):
+    from app.engine.db_types import VALID_PARADIGMS
+    if data["paradigm"] not in VALID_PARADIGMS:
         return EmitResult(
             status="rejected", reason="invalid_paradigm",
             at_field="paradigm",

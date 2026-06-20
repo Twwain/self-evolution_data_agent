@@ -1,6 +1,7 @@
 import React from "react";
 import { Steps, Tag } from "antd";
 import { CheckCircleTwoTone, LoadingOutlined } from "@ant-design/icons";
+import { DB_TYPE_META } from "@/types";
 
 export interface PlanStepDone {
   step_id: number;
@@ -26,7 +27,7 @@ export const PlanProgress: React.FC<Props> = ({ steps, running }) => {
   const items = steps.map((s) => ({
     title: (
       <span>
-        <Tag color={s.db_type === "mysql" ? "blue" : s.db_type === "oracle" ? "red" : "green"}>{s.db_type}</Tag>
+        <Tag color={DB_TYPE_META[s.db_type as keyof typeof DB_TYPE_META]?.color ?? "default"}>{s.db_type}</Tag>
         {s.target}
       </span>
     ),

@@ -3,7 +3,6 @@
 """
 
 import asyncio
-import importlib
 import json
 import re as _re
 import time
@@ -169,52 +168,23 @@ async def _build_coll_to_db(ns_id: int, name: str) -> dict[str, str]:
 
     用于补全 agent 产物缺失的 database 字段。连接失败的单个 DS 跳过 (best-effort)。
     """
+    from app.engine.drivers import DRIVERS, get_driver
+
     coll_to_db: dict[str, str] = {}
     async with async_session() as ds_db:
         ds_rows = list((await ds_db.execute(
             select(DataSource).where(DataSource.namespace_id == ns_id)
         )).scalars().all())
         for ds in ds_rows:
+            if ds.db_type not in DRIVERS:
+                log.warning("[%s] collection→db 跳过未知 db_type=%s ds_id=%d",
+                            name, ds.db_type, ds.id)
+                continue
             try:
-                if ds.db_type == "mongodb":
-                    from pymongo import MongoClient
-                    client = MongoClient(
-                        host=ds.host, port=ds.port,
-                        username=ds.username, password=ds.password,
-                        authSource="admin",
-                        serverSelectionTimeoutMS=settings.datasource_connect_timeout_ms,
-                    )
-                    colls = sorted(client[ds.database].list_collection_names())
-                    client.close()
-                    for coll in colls:
-                        coll_to_db.setdefault(coll, ds.database)
-                elif ds.db_type == "mysql":
-                    import pymysql
-                    conn = pymysql.connect(
-                        host=ds.host, port=ds.port, database=ds.database,
-                        user=ds.username, password=ds.password,
-                        connect_timeout=settings.datasource_connect_timeout_ms // 1000,
-                    )
-                    with conn.cursor() as cur:
-                        cur.execute("SHOW TABLES")
-                        tables = sorted(row[0] for row in cur.fetchall())
-                    conn.close()
-                    for tbl in tables:
-                        coll_to_db.setdefault(tbl, ds.database)
-                elif ds.db_type == "oracle":
-                    import oracledb  # type: ignore[import-untyped]
-                    importlib.import_module("app.engine.drivers.oracle")
-                    dsn = f"{ds.host}:{ds.port}/{ds.database}"
-                    conn = oracledb.connect(
-                        user=ds.username, password=ds.password, dsn=dsn,
-                        tcp_connect_timeout=settings.oracle_connect_timeout_secs,
-                    )
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT TABLE_NAME FROM USER_TABLES ORDER BY TABLE_NAME")
-                        tables = sorted(row[0] for row in cur.fetchall())
-                    conn.close()
-                    for tbl in tables:
-                        coll_to_db.setdefault(tbl, ds.database)
+                driver = get_driver(ds.db_type)
+                names = await driver.list_object_names(ds)
+                for n in names:
+                    coll_to_db.setdefault(n, ds.database)
             except Exception as e:
                 log.warning("[%s] collection→db 反查连接失败 ds_id=%d db_type=%s: %s",
                             name, ds.id, ds.db_type, e)

@@ -14,6 +14,7 @@ import React, { useMemo, useState } from "react";
 import { Alert, Modal, Button, Form, Space, Tag, Typography, Card, message } from "antd";
 import { resolveTerminologyConflict } from "@/api";
 import type { TerminologyConflict } from "@/types";
+import { DB_TYPE_META } from "@/types";
 import TerminologyEditPanel, { type TerminologyPayload } from "./TerminologyEditPanel";
 
 type Choice = "keep_existing" | "replace" | "merge_both" | "reject_both" | "manual_edit";
@@ -71,11 +72,7 @@ function TermInfoCard({
       <div style={{ marginTop: 8 }}>
         <Space size={4} wrap>
           {payload.db_type && (
-            <Tag color={
-              payload.db_type === "mongodb" ? "geekblue"
-              : payload.db_type === "oracle" ? "red"
-              : "purple"
-            }>
+            <Tag color={DB_TYPE_META[payload.db_type as keyof typeof DB_TYPE_META]?.color ?? "purple"}>
               {payload.db_type}
             </Tag>
           )}

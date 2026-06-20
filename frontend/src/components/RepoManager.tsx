@@ -29,6 +29,7 @@ import {
 } from "@ant-design/icons";
 import * as api from "@/api";
 import type { BatchStatus, DataSource, GitRepo, ParseReport } from "@/types";
+import { DB_TYPE_META } from "@/types";
 import styles from "@/styles/namespace.module.css";
 
 const { Text } = Typography;
@@ -358,21 +359,21 @@ const RepoManager: React.FC<Props> = ({ nsId, datasources, repos, batchStatus, o
                   💡 此仓库包含混合数据库架构（MySQL {report.ddls_trained} 个表 + MongoDB 集合），建议同时映射两种类型的数据源
                 </div>
               )}
-              {mappings.map((m: any) => (
+              {mappings.map((m: any) => {
+                const ds = datasources.find((d: any) => d.id === m.datasource_id);
+                const dbType = ds?.db_type as keyof typeof DB_TYPE_META | undefined;
+                return (
                 <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                  <Tag color={
-                    datasources.find((d) => d.id === m.datasource_id)?.db_type === "mongodb" ? "blue"
-                    : datasources.find((d) => d.id === m.datasource_id)?.db_type === "oracle" ? "red"
-                    : "green"
-                  }>
-                    {datasources.find((d) => d.id === m.datasource_id)?.database || `DS#${m.datasource_id}`}
-                    ({datasources.find((d) => d.id === m.datasource_id)?.db_type})
+                  <Tag color={DB_TYPE_META[dbType!]?.color ?? "green"}>
+                    {ds?.database || `DS#${m.datasource_id}`}
+                    ({ds?.db_type})
                   </Tag>
                   <Popconfirm title="移除映射?" onConfirm={() => handleDeleteMapping(m.id)}>
                     <Button size="small" danger type="link">移除</Button>
                   </Popconfirm>
                 </div>
-              ))}
+                );
+              })}
               <Select
                 placeholder="添加数据源映射"
                 style={{ width: 300, marginTop: 4 }}

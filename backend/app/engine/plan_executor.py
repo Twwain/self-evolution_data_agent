@@ -488,14 +488,14 @@ async def _execute_mongo_step(
     from app.engine.tools._resolve_ds import resolve_ds
 
     async with async_session() as db:
-        ds = await resolve_ds(db, ns_id, "mongodb", step.database)
+        ds = await resolve_ds(db, ns_id, step.db_type, step.database)
     if ds is None:
         raise PlanExecutionError(
             step.step_idx,
-            RuntimeError(f"未找到 database={step.database} 的 mongo datasource (ns={ns_id})"),
+            RuntimeError(f"未找到 database={step.database} 的 {step.db_type} datasource (ns={ns_id})"),
         )
 
-    driver = get_driver("mongodb")
+    driver = get_driver(step.db_type)
 
     # 变量替换 pipeline/query
     resolved_pipeline = _resolve_vars(step.pipeline, prev_vars) if step.pipeline else []
@@ -553,8 +553,8 @@ async def _execute_mongo_step(
     return rows, truncated, total
 
 
-async def _resolve_step_caps(ns_id: int, database: str) -> dict | None:
-    """Resolve the mongodb datasource capabilities for a step. Failure-safe.
+async def _resolve_step_caps(ns_id: int, db_type: str, database: str) -> dict | None:
+    """Resolve the document datasource capabilities for a step. Failure-safe.
 
     resolve_ds → get_server_capabilities (per-ds cached). Any missing datasource
     or probe failure → None (pre-validation must never block execution).
@@ -564,11 +564,11 @@ async def _resolve_step_caps(ns_id: int, database: str) -> dict | None:
     from app.engine.tools._resolve_ds import resolve_ds
 
     async with async_session() as db:
-        ds = await resolve_ds(db, ns_id, "mongodb", database)
+        ds = await resolve_ds(db, ns_id, db_type, database)
     if ds is None:
         return None
     try:
-        caps = await get_driver("mongodb").get_server_capabilities(ds)
+        caps = await get_driver(db_type).get_server_capabilities(ds)
     except Exception:  # noqa: BLE001 — pre-validation must never block on probe failure
         return None
     return dict(caps) if caps is not None else None
@@ -627,11 +627,12 @@ async def execute_plan(
                 log.warning("[plan_executor] langfuse step span 创建失败: %s", e, exc_info=True)
                 step_span = None
 
-        # ── 能力预校验 (defense-in-depth): 在派发 mongodb step 到 driver 之前拦截 ──
+        # ── 能力预校验 (defense-in-depth): 在派发 document 型 step 到 driver 之前拦截 ──
         # 解析该 step 的 datasource caps (failure-safe), 比对 resolved pipeline.
-        # native/empty-caps step 与 mysql step 不校验 → 直接放行到 driver.
-        if step.db_type == "mongodb":
-            caps = await _resolve_step_caps(ns_id, step.database)
+        # native/empty-caps step 与 relational step 不校验 → 直接放行到 driver.
+        from app.engine.db_types import DOCUMENT_DB_TYPES
+        if step.db_type in DOCUMENT_DB_TYPES:
+            caps = await _resolve_step_caps(ns_id, step.db_type, step.database)
             resolved_pipeline = _resolve_vars(step.pipeline, prev_vars) if step.pipeline else []
             violation = validate_pipeline_against_caps(resolved_pipeline, caps)
             if violation is not None:
@@ -658,21 +659,21 @@ async def execute_plan(
                 )
 
         try:
-            from app.engine.db_types import SQL_DB_TYPES as _SQL_TYPES
+            from app.engine.db_types import DOCUMENT_DB_TYPES, SQL_DB_TYPES as _SQL_TYPES
             from app.engine.drivers._exceptions import UnsupportedDataSourceTypeError
             step_mode: ExecuteMode = "render" if step.step_idx == _last_idx else "single"
             if step.db_type in _SQL_TYPES:
                 docs, _trunc, _total = await _execute_sql_step(
                     step, slug, ns_id, prev_vars, mode=step_mode,
                 )
-            elif step.db_type == "mongodb":
+            elif step.db_type in DOCUMENT_DB_TYPES:
                 docs, _trunc, _total = await _execute_mongo_step(
                     step, slug, ns_id, prev_vars, mode=step_mode,
                 )
             else:
                 raise UnsupportedDataSourceTypeError(
                     f"step_idx={step.step_idx} 不支持的 db_type={step.db_type!r}",
-                    suggestion="当前仅支持 mysql / oracle / mongodb",
+                    suggestion=f"当前仅支持: {sorted(_SQL_TYPES | DOCUMENT_DB_TYPES)}",
                 )
             _step_truncated[step.step_idx] = _trunc
             _step_total[step.step_idx] = _total

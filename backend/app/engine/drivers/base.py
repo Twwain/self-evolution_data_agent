@@ -89,6 +89,14 @@ class DataSourceDriver(Protocol):
     """所有数据源驱动必须实现此协议."""
 
     db_type: str
+    paradigm: str  # "relational" | "document" — 知识挂在实体上, 由 driver 类声明
+
+    async def list_object_names(self, ds: DataSource) -> list[str]:
+        """连库列所有表/集合名. 用于反查 (object_name → database) 绑定.
+
+        连接失败抛异常, 由调用方隔离.
+        """
+        ...
 
     async def fetch_schema(
         self,

@@ -848,7 +848,8 @@ async def inspect_samples_endpoint(
     if not sco or sco.namespace_id != ns_id:
         raise HTTPException(404, "schema canonical not found")
 
-    if sco.db_type != "mongodb":
+    from app.engine.db_types import DOCUMENT_DB_TYPES
+    if sco.db_type not in DOCUMENT_DB_TYPES:
         raise HTTPException(
             422,
             f"inspect_samples 仅支持 mongodb (当前 db_type={sco.db_type}); "

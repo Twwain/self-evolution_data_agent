@@ -8,7 +8,9 @@ from dataclasses import dataclass, field
 
 # Paradigm 是开放集: 新增范式 (kv/search/graph) 时扩这里 + 下游处理, 不破坏既有 extractor
 Paradigm = str
-VALID_PARADIGMS: frozenset[str] = frozenset({"relational", "document"})
+# VALID_PARADIGMS 从 engine.db_types 导入 (单一真相源, 派生自 DRIVERS 注册表).
+# extractors 层保留 import 网关以防 engine 层 protocol 语义不同步, 不做二次定义.
+from app.engine.db_types import VALID_PARADIGMS  # noqa: E402 — 紧贴 Paradigm type alias, 有意放在顶部 imports 之后
 
 
 @dataclass

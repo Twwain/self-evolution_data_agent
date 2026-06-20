@@ -16,6 +16,19 @@ DRIVERS: dict[str, DataSourceDriver] = {
     "oracle": OracleDriver(),
 }
 
+# ── 启动期硬约束: 每个 driver 必须声明 paradigm ──
+# 新增 driver 忘了填 paradigm → 进程启动即 crash, 不给静默机会.
+for _t, _d in DRIVERS.items():
+    _p = getattr(_d, "paradigm", None)
+    assert _p is not None, (
+        f"driver '{_t}' 未声明 paradigm — "
+        f"新增 driver 必须填 paradigm 字段 ({list(DRIVERS.keys())})"
+    )
+    assert _p in ("relational", "document"), (
+        f"driver '{_t}'.paradigm={_p!r} 不合法, "
+        f"paradigm 必须是 'relational' 或 'document'"
+    )
+
 
 def get_driver(db_type: str) -> DataSourceDriver:
     """按 db_type 获取 driver 单例. 未注册则抛 UnsupportedDataSourceType."""

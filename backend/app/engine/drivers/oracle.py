@@ -141,6 +141,7 @@ class OracleDriver:
     """Oracle 驱动，自动适配 Thin / Thick mode。"""
 
     db_type: str = "oracle"
+    paradigm: str = "relational"
 
     def __init__(self) -> None:
         # Thin mode: AsyncConnectionPool
@@ -529,6 +530,20 @@ class OracleDriver:
 
     async def get_server_capabilities(self, ds: DataSource) -> ServerCapabilities | None:
         return None
+
+    # ── list_object_names ──────────────────────────────────────
+
+    async def list_object_names(self, ds: DataSource) -> list[str]:
+        """SELECT TABLE_NAME FROM USER_TABLES → sorted list."""
+        return await self._run_in_executor(self._list_object_names_sync, ds)
+
+    def _list_object_names_sync(self, ds: DataSource) -> list[str]:
+        pool = self._get_sync_pool(ds)
+        with pool.acquire() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT TABLE_NAME FROM USER_TABLES ORDER BY TABLE_NAME")
+            rows = cur.fetchall()
+            return sorted(r[0] for r in rows)
 
     # ── fetch_db_profile ──────────────────────────────────────
 

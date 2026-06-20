@@ -74,9 +74,17 @@ class NamespaceDeletePreview(BaseModel):
 # ════════════════════════════════════════════
 
 class DataSourceCreate(BaseModel):
-    db_type: str = Field(pattern=r"^(mysql|mongodb|oracle)$")
+    db_type: str = Field(pattern=r"^(mysql|mongodb|oracle)$")  # ← 与 DRIVERS 注册表同步, 见 engine/db_types.py:SUPPORTED_DB_TYPES
     host: str
     port: int
+
+    @field_validator("db_type")
+    @classmethod
+    def _db_type_is_supported(cls, v: str) -> str:
+        from app.engine.db_types import SUPPORTED_DB_TYPES
+        if v not in SUPPORTED_DB_TYPES:
+            raise ValueError(f"不支持的 db_type: {v!r}, 仅支持: {sorted(SUPPORTED_DB_TYPES)}")
+        return v
     database: str
     username: str
     password: str  # 明文传入, 服务端加密存储

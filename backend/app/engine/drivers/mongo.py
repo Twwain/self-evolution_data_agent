@@ -133,6 +133,7 @@ class MongoDriver:
     """motor AsyncIOMotorClient 驱动, 实现 DataSourceDriver 协议."""
 
     db_type: str = "mongodb"
+    paradigm: str = "document"
 
     def __init__(self) -> None:
         self._clients: dict[int, AsyncIOMotorClient] = {}
@@ -424,6 +425,13 @@ class MongoDriver:
             return True
         except Exception:
             return False
+
+    # ── list_object_names ────────────────────────────────
+
+    async def list_object_names(self, ds: DataSource) -> list[str]:
+        """list_collection_names → 返回库内全部集合名 (sorted)."""
+        client = self._get_client(ds)
+        return sorted(await client[ds.database].list_collection_names())
 
     # ── get_server_capabilities ──────────────────────────
 

@@ -5,11 +5,10 @@
         ParsedSchema, SchemaObject, FieldDef, EnumValue, RelSignal,
         KnowledgeProposal, ExtractorReport, validate_parsed_schema,
     )
-    from app.knowledge.extractors.binding import PARADIGM_MAP
 
-注: 旧 7-钩子确定性 SPI (engine/registry/protocol/declarative) 已随
-2026-06-17-agentic-repo-extractor 作废, 仅保留纯 dataclass 契约 (base.py)
-与 paradigm 路由 (binding.py)。
+注: 旧 7-钩子确定性 SPI (engine/registry/protocol/declarative) 与 binding.py (paradigm 路由
+死码, 2026-06-20 删除) 已随 agentic-repo-extractor 作废。paradigm 路由现由
+engine/drivers DRIVERS 注册表统一提供 (见 engine/db_types.py:PARADIGM_MAP)。
 """
 from app.knowledge.extractors.base import (
     EnumValue,

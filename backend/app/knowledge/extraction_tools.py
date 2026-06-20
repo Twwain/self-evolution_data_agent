@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.engine.db_types import VALID_PARADIGMS
 
 # 二进制/产物文件扩展名 — grep 跳过, 避免大仓遍历 .class/.jar/图片/压缩包性能退化
 _BINARY_EXTENSIONS: frozenset[str] = frozenset({
@@ -273,7 +274,7 @@ EXTRACTION_TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "required": ["paradigm", "kind", "name", "fields", "source_ref"],
             "properties": {
-                "paradigm": {"type": "string", "enum": ["relational", "document"]},
+                "paradigm": {"type": "string", "enum": sorted(VALID_PARADIGMS)},
                 "kind": {"type": "string", "enum": ["table", "collection"]},
                 "name": {"type": "string", "description": "表名/集合名"},
                 "description": {"type": "string"},

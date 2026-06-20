@@ -5,7 +5,7 @@
  *  初次进入自动恢复 localStorage 记忆的命名空间 (NamespaceSelector 内).
  * ════════════════════════════════════════════ */
 
-import React, { useCallback, useEffect, useState, useMemo } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Button,
   Form,
@@ -32,15 +32,8 @@ import type {
   GitRepo,
   Namespace,
 } from "@/types";
+import { DB_TYPE_META } from "@/types";
 
-/** 数据库类型元信息 — 全局唯一, 替换所有二分判断 */
-const DB_TYPE_META: Record<DbType, {
-  short: string; label: string; color: string; isSql: boolean; defaultPort: number;
-}> = {
-  mysql:   { short: "My", label: "MySQL",   color: "blue",  isSql: true,  defaultPort: 3306 },
-  mongodb: { short: "Mg", label: "MongoDB", color: "green", isSql: false, defaultPort: 27017 },
-  oracle:  { short: "Or", label: "Oracle",  color: "red",   isSql: true,  defaultPort: 1521 },
-};
 import RepoManager from "@/components/RepoManager";
 import { clearLastNamespaceId } from "@/hooks/useLastNamespaceId";
 import styles from "@/styles/namespace.module.css";

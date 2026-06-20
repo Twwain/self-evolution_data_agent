@@ -44,6 +44,7 @@ class MySQLDriver:
     """aiomysql 连接池驱动, 实现 DataSourceDriver 协议."""
 
     db_type: str = "mysql"
+    paradigm: str = "relational"
 
     def __init__(self) -> None:
         self._pools: dict[int, aiomysql.Pool] = {}
@@ -312,6 +313,17 @@ class MySQLDriver:
             return True
         except Exception:
             return False
+
+    # ── list_object_names ────────────────────────────────
+
+    async def list_object_names(self, ds: DataSource) -> list[str]:
+        """SHOW TABLES → 返回库内全部表名 (sorted)."""
+        pool = await self._get_pool(ds)
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SHOW TABLES")
+                rows = await cur.fetchall()
+                return sorted(r[0] for r in rows)
 
     # ── get_server_capabilities ──────────────────────────
 
