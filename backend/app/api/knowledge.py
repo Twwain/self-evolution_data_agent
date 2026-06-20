@@ -657,8 +657,36 @@ async def add_repo(
     ns = await db.get(Namespace, ns_id)
     if not ns:
         raise HTTPException(404, "命名空间不存在")
-    repo = GitRepo(namespace_id=ns_id, url=body.url, branch=body.branch)
+    repo = GitRepo(namespace_id=ns_id, url=body.url, branch=body.branch,
+                   profile_id=body.profile_id)
     db.add(repo)
+    await db.commit()
+    await db.refresh(repo)
+    return _enrich_repo_out(repo)
+
+
+@router.patch("/api/namespaces/{ns_id}/repos/{repo_id}", response_model=GitRepoOut)
+async def patch_repo(
+    ns_id: int,
+    repo_id: int,
+    body: dict,  # 兼容 Pydantic 严格模式, 手动校验
+    _user: User = Depends(require_ns_manage),
+    db: AsyncSession = Depends(get_db),
+):
+    """PATCH GitRepo — 当前仅支持更新 profile_id."""
+    repo = await db.get(GitRepo, repo_id)
+    if not repo or repo.namespace_id != ns_id:
+        raise HTTPException(404, "Git repo 不存在")
+
+    allowed = {"profile_id"}
+    for k, v in body.items():
+        if k not in allowed:
+            raise HTTPException(400, f"PATCH 不支持字段: {k}")
+        if k == "profile_id":
+            if v is not None and not isinstance(v, int):
+                raise HTTPException(400, "profile_id 必须为整数或 null")
+            repo.profile_id = v
+
     await db.commit()
     await db.refresh(repo)
     return _enrich_repo_out(repo)
@@ -1091,6 +1119,7 @@ def _enrich_repo_out(repo: GitRepo) -> dict:
         "worker_id": repo.worker_id,
         "progress": repo.progress,
         "progress_message": repo.progress_message,
+        "profile_id": repo.profile_id,
     }
     if repo.parse_report:
         try:

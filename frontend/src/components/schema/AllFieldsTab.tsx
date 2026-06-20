@@ -4,7 +4,11 @@ import type { ColumnsType } from "antd/es/table";
 import { useState } from "react";
 
 import { enumApi } from "@/api";
-import type { SchemaCanonicalField, SchemaCanonicalObject } from "@/types/schema-canonical";
+import type {
+  SchemaCanonicalField,
+  SchemaCanonicalObject,
+  SchemaCanonicalRelationship,
+} from "@/types/schema-canonical";
 import { ConfidenceTag } from "./ConfidenceTag";
 import { EnumBindDrawer } from "./EnumBindDrawer";
 import { FieldRowActions } from "./FieldRowActions";
@@ -59,7 +63,7 @@ function validateFields(
 function toEditableFields(fields: SchemaCanonicalField[]): EditableField[] {
   return fields.map((f) => ({
     ...f,
-    _key: f.name || f.field || crypto.randomUUID(),
+    _key: f.name || crypto.randomUUID(),
     _isNew: false,
     sub_fields: f.sub_fields
       ? toEditableFields(f.sub_fields)
@@ -79,7 +83,7 @@ function stripEditFlags(fields: EditableField[]): SchemaCanonicalField[] {
 /* ── 递归子字段树 ── */
 
 function getFieldName(f: SchemaCanonicalField): string {
-  return f.name || f.field || "";
+  return f.name || "";
 }
 
 function SubFieldsTree(props: {
@@ -272,7 +276,7 @@ function SubFieldsTree(props: {
 /* ── 主组件 ── */
 
 export function AllFieldsTab(props: {
-  sco: Pick<SchemaCanonicalObject, "id" | "fields" | "user_locked" | "description" | "purpose_detail">;
+  sco: Pick<SchemaCanonicalObject, "id" | "fields" | "user_locked" | "description" | "purpose_detail" | "relationships">;
   namespaceId: number;
   onOpenEvidence: (fieldName: string) => void;
   onOpenHistory: (fieldName: string) => void;
@@ -654,6 +658,49 @@ export function AllFieldsTab(props: {
           },
         }}
       />
+
+      {/* ── Relationships section ── */}
+      {props.sco.relationships && props.sco.relationships.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <h4 style={{ marginBottom: 8 }}>关联关系 ({props.sco.relationships.length})</h4>
+          <Table<SchemaCanonicalRelationship>
+            rowKey={(r) => `${r.from_target}:${r.from_field}→${r.to_target}:${r.to_field}`}
+            dataSource={props.sco.relationships}
+            columns={[
+              {
+                title: "源表",
+                dataIndex: "from_target",
+                width: 180,
+                render: (t: string) => <strong>{t}</strong>,
+              },
+              {
+                title: "源字段",
+                dataIndex: "from_field",
+                width: 140,
+              },
+              {
+                title: "类型",
+                dataIndex: "relation_type",
+                width: 100,
+                render: (t: string) => <Tag>{t}</Tag>,
+              },
+              {
+                title: "目标表",
+                dataIndex: "to_target",
+                width: 180,
+                render: (t: string) => <strong>{t}</strong>,
+              },
+              {
+                title: "目标字段",
+                dataIndex: "to_field",
+                width: 140,
+              },
+            ]}
+            pagination={false}
+            size="small"
+          />
+        </div>
+      )}
 
       {/* Add field button */}
       {editing && (

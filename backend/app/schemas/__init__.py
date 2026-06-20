@@ -124,6 +124,7 @@ class SchemaRefreshResult(BaseModel):
 class GitRepoCreate(BaseModel):
     url: str
     branch: str = "master"
+    profile_id: int | None = None    # agentic extractor profile
 
 
 class GitRepoOut(BaseModel):
@@ -139,6 +140,7 @@ class GitRepoOut(BaseModel):
     worker_id: str = ""
     progress: int = 0
     progress_message: str = ""
+    profile_id: int | None = None    # agentic extractor profile (NULL=自动识别)
     model_config = {"from_attributes": True}
 
 

@@ -132,7 +132,7 @@ pg_dump self_evolution_data_agent > self_evolution_data_agent-$(date +%Y%m%d).sq
 ### First query in 4 steps
 
 1. Create a namespace and register a MySQL or MongoDB datasource.
-2. Add a Git repository and trigger training — the agent parses your schema and business terms automatically.
+2. Add a Git repository and trigger training — an AI agent autonomously explores the source (any language: Java/Python/Go/...) and extracts your schema and business terms. Optionally pick an extraction **Profile** to guide framework detection.
 3. Wait for schema candidates to aggregate, then review and confirm them in the UI.
 4. Ask a question in natural language and get a chart back.
 
@@ -151,7 +151,7 @@ Natural language → LLM (Agent Loop + tool calls) → DB execution → chart / 
 | `engine/agent_loop` | Multi-round reasoning-and-acting loop with tool calls, quota buckets, and dead-loop detection |
 | `drivers/mysql.py` | MySQL driver (aiomysql + INFORMATION_SCHEMA introspection) |
 | `drivers/mongo.py` | MongoDB driver (Motor async + Flavor detection for DocumentDB differences) |
-| `knowledge/` | Git parsing, `proposed → canonical` review state machine, retrieval, HyQE, A-MEM, decay |
+| `knowledge/` | Agentic repo extraction (autonomous agent explores source → emits schema), `proposed → canonical` review state machine, retrieval, HyQE, A-MEM, decay |
 
 ### Tech stack
 

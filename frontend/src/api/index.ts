@@ -517,3 +517,42 @@ export const enumApi = {
       )
       .then((r) => r.data),
 };
+
+
+// ════════════════════════════════════════════
+//  Extractor Profile API (agentic-repo-extractor)
+// ════════════════════════════════════════════
+
+export interface ProfileOut {
+  id: number;
+  name: string;
+  display_name: string;
+  description: string;
+  languages: string[];
+  hint_text: string;
+  is_builtin: boolean;
+  is_enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export const fetchProfiles = () =>
+  http.get<ProfileOut[]>("/profiles").then((r) => r.data);
+
+export const createProfile = (data: {
+  name: string;
+  display_name: string;
+  description?: string;
+  languages?: string[];
+  hint_text?: string;
+}) => http.post<ProfileOut>("/profiles", data).then((r) => r.data);
+
+export const updateProfile = (id: number, data: Record<string, any>) =>
+  http.patch<ProfileOut>(`/profiles/${id}`, data).then((r) => r.data);
+
+export const deleteProfile = (id: number) =>
+  http.delete(`/profiles/${id}`);
+
+export const updateRepoProfile = (nsId: number, repoId: number, profileId: number | null) =>
+  http.patch<GitRepo>(`/namespaces/${nsId}/repos/${repoId}`, { profile_id: profileId })
+    .then((r) => r.data);

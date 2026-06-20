@@ -110,6 +110,32 @@ async def _delete_open_conflicts(db: AsyncSession, ns_id: int) -> int:
     return tc.rowcount or 0  # type: ignore[union-attr]
 
 
+async def _delete_legacy_candidates(db: AsyncSession, repo_id: int) -> int:
+    """删 repo 的 pending 候选 — 全量重建起点 (I2).
+
+    仅删 status='pending': promoted 后的候选状态为 'active' (人审确认),
+    rejected/superseded/in_conflict 是人类决策痕迹, 全部保留审计轨迹。
+    根因: schema_canonical_candidates 无 source 列, _delete_legacy_kes 的
+    source 过滤器对其无效; write_canonical_candidate 按 value_hash UPSERT,
+    重提取产出"不同" schema 时旧 pending 候选不被覆盖 → 堆积, 需显式清。
+    返回删除行数。
+    """
+    from app.models.schema_canonical_candidate import SchemaCanonicalCandidate
+    rows = (await db.execute(
+        select(SchemaCanonicalCandidate.id).where(
+            SchemaCanonicalCandidate.repo_id == repo_id,
+            SchemaCanonicalCandidate.status == "pending",
+        )
+    )).scalars().all()
+    if rows:
+        await db.execute(
+            delete(SchemaCanonicalCandidate).where(
+                SchemaCanonicalCandidate.id.in_(rows)
+            )
+        )
+    return len(rows)
+
+
 async def purge_legacy_for_full_rebuild(
     db: AsyncSession,
     repo_id: int,
@@ -183,10 +209,14 @@ async def purge_legacy_for_full_rebuild(
         # ── 兜底清 open conflict (G5) ──
         tc_count = await _delete_open_conflicts(db, ns_id)
 
+        # ── 删 pending 候选 (I2: candidate 层无 source 列, 需独立清) ──
+        cand_count = await _delete_legacy_candidates(db, repo_id)
+
         reason = (
             f"trainer_full_rebuild repo={repo_id} ns={ns_id} "
             f"ke_deleted={len(deleted_ke_ids)} (git={git_ke_count}, mybatis_extract={mybatis_ke_count}) "
             f"schema_terminology_deleted={len(schema_term_rows)} "
+            f"candidates_deleted={cand_count} "
             f"cascade_audit_deleted={cascade_audit_n} "
             f"cascade_conflict_deleted={cascade_conflict_n} "
             f"open_tc_deleted={tc_count}"
@@ -222,7 +252,7 @@ async def purge_legacy_for_full_rebuild(
     return {
         "ke_deleted": len(deleted_ke_ids),
         "fragments_deleted": 0,
-        "canonicals_deleted": 0,
+        "canonicals_deleted": cand_count,
         "mongo_conflicts": 0,
         "term_conflicts": tc_count,
     }

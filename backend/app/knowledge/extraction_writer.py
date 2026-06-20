@@ -62,7 +62,6 @@ async def write_canonical_candidates_from_parse(
     jpa_entities: list[dict],
     mongo_documents: list[dict],
     enum_classes: list[dict],
-    relationships: list[dict],
     where_evidence: list[dict],
     coll_to_db: dict[str, str] | None = None,
     repo_name: str = "",
@@ -71,8 +70,10 @@ async def write_canonical_candidates_from_parse(
 
     每个 target (table/collection) 独立事务, 消除并发 worker 长事务竞态.
 
-    Converts jpa_entities/mongo_documents/enum_classes/relationships into
+    Converts jpa_entities/mongo_documents/enum_classes into
     SchemaCanonicalCandidate rows via write_canonical_candidate().
+    relationship candidate 由 entity writer 内联产生 — 与 field 共享
+    同一 database gate, 防幽灵 SCO.
 
     Args:
         coll_to_db: collection→database 反查表 (训练时实时连接 DataSource 构建).
@@ -82,7 +83,7 @@ async def write_canonical_candidates_from_parse(
     """
     total = 0
 
-    # ── JPA entities — 每个 entity 一个事务 ──
+    # ── JPA entities — 每个 entity 一个事务 (含 field + relationship) ──
     for entity in jpa_entities:
         async with async_session() as db:
             total += await _write_jpa_entity_candidates(
@@ -91,7 +92,7 @@ async def write_canonical_candidates_from_parse(
             )
             await db.commit()
 
-    # ── Mongo documents — 每个 collection 一个事务 ──
+    # ── Mongo documents — 每个 collection 一个事务 (含 field + relationship) ──
     for doc in mongo_documents:
         async with async_session() as db:
             total += await _write_mongo_document_candidates(
@@ -108,18 +109,10 @@ async def write_canonical_candidates_from_parse(
             )
             await db.commit()
 
-    # ── Relationships — 每个 rel 一个事务 ──
-    for rel in relationships:
-        async with async_session() as db:
-            total += await _write_relationship_candidate(
-                db, namespace_id, repo_id, rel,
-            )
-            await db.commit()
-
     log.info(
-        "[%s] candidates written: %d (jpa=%d mongo=%d enum=%d rel=%d)",
+        "[%s] candidates written: %d (jpa=%d mongo=%d enum=%d)",
         repo_name, total, len(jpa_entities), len(mongo_documents),
-        len(enum_classes), len(relationships),
+        len(enum_classes),
     )
     return total
 
@@ -169,7 +162,7 @@ async def _write_jpa_entity_candidates(
 
     # field_description candidates
     for field in entity.get("fields", []):
-        field_name = field.get("column") or field.get("name") or field.get("field") or ""
+        field_name = field.get("column") or field.get("name") or ""
         if not field_name:
             continue
 
@@ -209,6 +202,23 @@ async def _write_jpa_entity_candidates(
                 repo_id=repo_id,
             )
             count += 1
+
+    # relationship candidates — 与 field 共享同一 db_type/database/gate
+    for rel in entity.get("relations", []):
+        if not rel.get("from_field") or not rel.get("to_target"):
+            continue
+        count += await _write_relationship_candidate(
+            db, namespace_id, repo_id,
+            from_target=table_name,
+            from_field=rel.get("from_field"),
+            to_target=rel.get("to_target"),
+            to_field=rel.get("to_field", ""),
+            relation_type=rel.get("relation_type", "foreign_key"),
+            db_type=db_type,
+            database=database,
+            source_file=source_file,
+            evidence_source="code_jpa",
+        )
 
     return count
 
@@ -258,7 +268,7 @@ async def _write_mongo_document_candidates(
 
     # field_description candidates
     for field in doc.get("fields", []):
-        field_name = field.get("field") or field.get("name") or ""
+        field_name = field.get("name") or ""
         if not field_name:
             continue
 
@@ -298,6 +308,23 @@ async def _write_mongo_document_candidates(
                 repo_id=repo_id,
             )
             count += 1
+
+    # relationship candidates — 与 field 共享同一 db_type/database/gate
+    for rel in doc.get("relations", []):
+        if not rel.get("from_field") or not rel.get("to_target"):
+            continue
+        count += await _write_relationship_candidate(
+            db, namespace_id, repo_id,
+            from_target=collection,
+            from_field=rel.get("from_field"),
+            to_target=rel.get("to_target"),
+            to_field=rel.get("to_field", ""),
+            relation_type=rel.get("relation_type", "foreign_key"),
+            db_type=db_type,
+            database=database,
+            source_file=source_file,
+            evidence_source="code_mongo",
+        )
 
     return count
 
@@ -340,27 +367,34 @@ async def _write_enum_class_candidates(
 
 
 async def _write_relationship_candidate(
-    db: AsyncSession, namespace_id: int, repo_id: int, rel: dict
+    db: AsyncSession, namespace_id: int, repo_id: int, *,
+    from_target: str, from_field: str,
+    to_target: str, to_field: str,
+    relation_type: str = "foreign_key",
+    db_type: str = "mysql",
+    database: str = "",
+    source_file: str = "",
+    evidence_source: str = "code_relation",
 ) -> int:
-    """Write a relationship candidate."""
-    from_target = rel.get("from_target") or ""
-    to_target = rel.get("to_target") or ""
-    if not from_target or not to_target:
+    """Write a relationship candidate — 由 entity writer 内联调用.
+
+    db_type / database 由调用方显式传入, 与 entity 的 field candidate 共享
+    同一 database gate, 杜绝独立通道绕过产生的幽灵 SCO.
+    """
+    if not from_target or not to_target or not database:
         return 0
 
-    db_type = rel.get("from_db_type") or "mysql"
-    database = rel.get("from_database") or ""
-    evidence = rel.get("evidence") or [{"source": "code_relation", "repo_id": repo_id}]
+    evidence = [{"source": evidence_source, "repo_id": repo_id, "file": source_file}]
 
     candidate_value = {
         "from_target": from_target,
-        "from_field": rel.get("from_field") or "",
-        "to_db_type": rel.get("to_db_type") or db_type,
-        "to_database": rel.get("to_database") or "",
+        "from_field": from_field,
+        "to_db_type": db_type,
+        "to_database": "",  # to_target 未绑定 database, 留空供后续反查
         "to_target": to_target,
-        "to_field": rel.get("to_field") or "",
-        "relation_type": rel.get("relation_type") or "unknown",
-        "is_required": rel.get("is_required", False),
+        "to_field": to_field,
+        "relation_type": relation_type or "unknown",
+        "is_required": True,
     }
 
     await write_canonical_candidate(
@@ -369,7 +403,7 @@ async def _write_relationship_candidate(
         db_type=db_type,
         database=database,
         target=from_target,
-        field_path=rel.get("from_field") or "",
+        field_path=from_field,
         candidate_kind="relationship",
         candidate_value=candidate_value,
         evidence_sources=evidence,
@@ -392,6 +426,7 @@ async def extract_and_write_knowledge(
     mybatis_entries: list[dict],
     business_terms: list[dict],
     business_rules: list[dict],
+    business_examples: list[dict] | None = None,
     explain_gate: "ExplainGate | None" = None,
     repo_name: str = "",
 ) -> int:
@@ -401,8 +436,7 @@ async def extract_and_write_knowledge(
     - route_hint (aggregated per mapper namespace → table set)
     - rule (from business_rules)
     - terminology (from business_terms, via upsert_terminology_with_validation)
-
-    mybatis → example KE 已下线 (Stage A, spec 2026-05-25).
+    - example (from business_examples — sql2nl 查询模式, D3 恢复; agentic 管线核心产出)
 
     Returns total KE entries created.
     """
@@ -423,10 +457,51 @@ async def extract_and_write_knowledge(
         if created:
             total += 1
 
-    log.info(
-        "[%s] KE written: %d (rule=%d term=%d)",
-        repo_name, total, len(business_rules), len(business_terms),
+    # ── business_examples → example KE (sql2nl, D3 恢复) ──
+    total += await _write_business_examples(
+        db, namespace_id, repo_id, business_examples or [],
     )
+
+    log.info(
+        "[%s] KE written: %d (rule=%d term=%d example=%d)",
+        repo_name, total, len(business_rules), len(business_terms),
+        len(business_examples or []),
+    )
+    return total
+
+
+async def _write_business_examples(
+    db: AsyncSession, namespace_id: int, repo_id: int, business_examples: list[dict],
+) -> int:
+    """sql2nl → example KE (D3 恢复). Stage A 下线, 本 spec 经 agentic 管线恢复为核心产出.
+
+    每个 example dict (agent emit_knowledge entry_type=example 的 payload) →
+    KnowledgeEntry(entry_type='example', status='proposed', source='mybatis_extract').
+    """
+    total = 0
+    for ex in business_examples:
+        sql = ex.get("sql_pattern", "")
+        if not sql:
+            continue
+        db.add(KnowledgeEntry(
+            namespace_id=namespace_id,
+            entry_type="example",
+            status="proposed",
+            tier="normal",
+            source="mybatis_extract",
+            repo_id=repo_id,
+            content=f"查询模式: {sql[:120]}",
+            payload=json.dumps({
+                "question_pattern": ex.get("question", ""),
+                "sql_pattern": sql,
+                "tables": ex.get("tables", []),
+                "source_mapper": ex.get("mapper_namespace", ""),
+                "extraction_source": "mybatis_extract",
+            }, ensure_ascii=False),
+        ))
+        total += 1
+    if total:
+        await db.flush()
     return total
 
 
@@ -469,17 +544,24 @@ async def _write_terminology_ke(
 
     repo_id 形参保留但有意忽略: 术语只归属 schema/namespace (ns 级), 不写 repo_id.
     """
-    from app.knowledge.terminology_intake import upsert_terminology_with_validation
+    from app.knowledge.terminology_intake import upsert_terminology_with_validation, _resolve_db_type
 
     term_name = term.get("term") or ""
     if not term_name:
         return False
 
+    primary_db = term.get("primary_database") or ""
+    resolved_db_type = await _resolve_db_type(db, namespace_id, primary_db) if primary_db else None
+    if not resolved_db_type:
+        log.warning("[%s] terminology %r: cannot resolve db_type for database=%r from DataSource",
+                    repo_name, term_name, primary_db)
+        return False
+
     payload_dict = {
         "term": term_name,
         "primary_collection": term.get("primary_collection") or "",
-        "primary_database": term.get("primary_database") or "",
-        "db_type": term.get("db_type") or "mysql",
+        "primary_database": primary_db,
+        "db_type": resolved_db_type,
         "primary_field": term.get("primary_field"),
         "synonyms": term.get("synonyms") or [],
         "source_collections": term.get("source_collections") or [],

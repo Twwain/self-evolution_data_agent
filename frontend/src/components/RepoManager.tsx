@@ -44,6 +44,15 @@ interface Props {
 const RepoManager: React.FC<Props> = ({ nsId, datasources, repos, batchStatus, onReposChange }) => {
   const [repoForm] = Form.useForm();
   const [parsing, setParsing] = useState<Set<number>>(new Set());
+  const [profiles, setProfiles] = useState<api.ProfileOut[]>([]);
+
+  useEffect(() => {
+    api.fetchProfiles().then(setProfiles).catch(() => {});
+  }, []);
+
+  const profileOptions = profiles
+    .filter((p) => p.is_enabled)
+    .map((p) => ({ label: `${p.display_name}${p.description ? ` — ${p.description}` : ""}`, value: p.id }));
 
   /* ── 报告展开 ── */
   const [expandedRepoId, setExpandedRepoId] = useState<number | null>(null);
@@ -83,6 +92,16 @@ const RepoManager: React.FC<Props> = ({ nsId, datasources, repos, batchStatus, o
     await api.deleteRepo(nsId, repoId);
     message.success("仓库已删除");
     onReposChange();
+  };
+
+  const handleChangeProfile = async (repoId: number, profileId: number | null) => {
+    try {
+      await api.updateRepoProfile(nsId, repoId, profileId);
+      message.success("Profile 已更新，重新解析以应用");
+      onReposChange();
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || "更新失败");
+    }
   };
 
   const handleParse = async (repoId: number) => {
@@ -217,6 +236,9 @@ const RepoManager: React.FC<Props> = ({ nsId, datasources, repos, batchStatus, o
           <Form.Item name="branch" initialValue="master">
             <Input placeholder="分支" style={{ width: 100 }} />
           </Form.Item>
+          <Form.Item name="profile_id" label="Profile" tooltip="选择正确的 profile 可提高 schema 识别准确率。不确定可不选。">
+            <Select allowClear placeholder="不选 (自动识别)" style={{ width: 220 }} options={profileOptions} />
+          </Form.Item>
           <Button type="primary" onClick={handleAddRepo}>添加</Button>
         </Form>
         {pendingCount > 0 && (
@@ -253,6 +275,17 @@ const RepoManager: React.FC<Props> = ({ nsId, datasources, repos, batchStatus, o
               </div>
               <div className={styles.dsMeta}>
                 {repo.branch} · {repo.parsed_at ? `上次解析: ${repo.parsed_at}` : "未解析"}
+              </div>
+              <div style={{ marginTop: 4 }}>
+                <Select
+                  size="small"
+                  allowClear
+                  placeholder="Profile: 不选 (自动识别)"
+                  style={{ width: 260 }}
+                  value={repo.profile_id ?? undefined}
+                  options={profileOptions}
+                  onChange={(v) => handleChangeProfile(repo.id, (v as number) ?? null)}
+                />
               </div>
               {/* 进度条 */}
               {repo.worker_id && (

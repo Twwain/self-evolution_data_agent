@@ -17,7 +17,6 @@ export interface SchemaCanonicalEnumValue {
 
 export interface SchemaCanonicalField {
   name: string;
-  field?: string; // 后端 candidate 原始格式用 "field" 作为字段名 key
   type: string;
   description?: string;
   description_confidence?: ConfidenceStatus;

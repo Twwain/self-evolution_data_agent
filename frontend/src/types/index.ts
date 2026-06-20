@@ -38,6 +38,7 @@ export interface GitRepo {
   worker_id: string;
   progress: number;
   progress_message: string;
+  profile_id?: number | null;  // agentic extractor profile (NULL=自动识别)
 }
 
 export interface BatchStatus {

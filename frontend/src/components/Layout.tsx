@@ -13,6 +13,7 @@ import {
   LogoutOutlined,
   ShareAltOutlined,
   ExperimentOutlined,
+  SettingOutlined,
 } from "@ant-design/icons";
 import { useNavigate, useLocation, Outlet } from "react-router-dom";
 import { Button } from "antd";
@@ -24,6 +25,7 @@ const adminNavItems = [
   { path: "/", icon: <BarChartOutlined />, label: "智能查询" },
   { path: "/namespaces", icon: <DatabaseOutlined />, label: "命名空间" },
   { path: "/knowledge", icon: <BookOutlined />, label: "知识库" },
+  { path: "/profiles", icon: <SettingOutlined />, label: "Profile 管理" },
   { path: "/admin/agent-traces", icon: <ExperimentOutlined />, label: "Trace 提炼" },
   { path: "/users", icon: <UserOutlined />, label: "用户管理" },
   { path: "/shares", icon: <ShareAltOutlined />, label: "分享管理" },

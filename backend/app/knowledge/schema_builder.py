@@ -5,26 +5,42 @@ Schema 构建器 — 将解析结果转为可训练文档
 
 
 def build_ddl_from_jpa(entities: list[dict]) -> list[str]:
-    """JPA Entity → DDL 语句"""
+    """JPA Entity → DDL 语句.
+
+    entity dict 契约 (来自 _map_agent_to_channels):
+      {"table": str, "table_name": str, "fields": [{"name": str, "field": str, "type": str}, ...]}
+    """
     ddls = []
     for e in entities:
+        fields = e.get("fields") or []
+        if not fields:
+            continue  # 无字段的实体跳过, 不生成空 DDL
         cols = ", ".join(
-            f"{c['column']} {_java_to_sql_type(c['type'])}" for c in e["columns"]
+            f"{f['name']} {_java_to_sql_type(f.get('type', 'String'))}" for f in fields
         )
-        ddl = f"CREATE TABLE {e['table']} ({cols});"
-        ddls.append(ddl)
+        tbl = e.get("table") or e.get("table_name") or "unknown"
+        ddls.append(f"CREATE TABLE {tbl} ({cols});")
     return ddls
 
 
 def build_doc_from_jpa(entities: list[dict]) -> list[str]:
-    """JPA Entity → 中文文档描述"""
+    """JPA Entity → 中文文档描述.
+
+    entity dict 契约 (来自 _map_agent_to_channels):
+      {"table": str, "table_name": str, "fields": [...], "relations": [...]}
+    relations 挂在 entity dict 上与 fields 并列 — 共享同一 database gate, 不剥离独立通道.
+    """
     docs = []
     for e in entities:
-        col_desc = ", ".join(f"{c['column']}({c['type']})" for c in e["columns"])
-        doc = f"表 {e['table']} (来自 {e['class_name']}): 包含字段 {col_desc}"
-        if e.get("relations"):
-            rels = ", ".join(f"{r['field']}→{r['target']}({r['type']})" for r in e["relations"])
-            doc += f"; 关联关系: {rels}"
+        fields = e.get("fields") or []
+        if not fields:
+            continue
+        col_desc = ", ".join(
+            f"{f['name']}({f.get('type', 'String')})" for f in fields
+        )
+        tbl = e.get("table") or e.get("table_name") or "unknown"
+        cls_name = e.get("table_name") or e.get("table") or tbl
+        doc = f"表 {tbl} (来自 {cls_name}): 包含字段 {col_desc}"
         docs.append(doc)
     return docs
 

@@ -4,6 +4,7 @@ from app.models.enum_binding_conflict import EnumBindingConflict
 from app.models.enum_dictionary import EnumDictionary
 from app.models.enum_sync_queue import EnumSyncQueue
 from app.models.extraction_failure_log import ExtractionFailureLog, ExtractionKind, FailureType
+from app.models.extractor_profile import ExtractorProfile
 from app.models.git_repo import GitRepo
 from app.models.knowledge_audit_log import KnowledgeAuditLog
 from app.models.knowledge_entry import KnowledgeEntry
@@ -44,6 +45,7 @@ __all__ = [
     "EnumSyncQueue",
     "ExtractionFailureLog",
     "ExtractionKind",
+    "ExtractorProfile",
     "FailureType",
     "GitRepo",
     "KnowledgeAuditLog",

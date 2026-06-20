@@ -28,6 +28,7 @@ const FAKE_SCO = {
   user_locked: false,
   description: "测试表",
   purpose_detail: "",
+  relationships: [],
 };
 
 describe("AllFieldsTab", () => {

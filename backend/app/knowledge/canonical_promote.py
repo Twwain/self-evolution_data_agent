@@ -418,7 +418,7 @@ async def _apply_to_canonical(
             sco.fields_json, field_path, "enum_values", value.get("enum_values", [])
         )
     elif kind == "relationship":
-        sco.relationships_json = _append_relationship(sco.relationships_json, value)
+        sco.relationships_json = _upsert_relationship(sco.relationships_json, value)
     elif kind == "sample_values":
         sco.sample_values_json = json.dumps(
             value.get("sample_values", []), ensure_ascii=False
@@ -461,8 +461,25 @@ def _upsert_field_attr(fields_json: str, field_path: str, attr: str, val: Any) -
     return json.dumps(fields, ensure_ascii=False)
 
 
-def _append_relationship(relationships_json: str, value: dict) -> str:
+def _upsert_relationship(relationships_json: str, value: dict) -> str:
+    """按 (from_field, to_target, to_field, relation_type) 去重更新.
+
+    与 _upsert_field_attr 对称 — 同一对关系被多源发现时 merge 而非重复追加.
+    """
     rels = json.loads(relationships_json) if relationships_json else []
+    key = (
+        value.get("from_field"), value.get("to_target"),
+        value.get("to_field"), value.get("relation_type"),
+    )
+    for r in rels:
+        if (
+            r.get("from_field") == key[0]
+            and r.get("to_target") == key[1]
+            and r.get("to_field") == key[2]
+            and r.get("relation_type") == key[3]
+        ):
+            r.update(value)  # merge 更新, 不追加
+            return json.dumps(rels, ensure_ascii=False)
     rels.append(value)
     return json.dumps(rels, ensure_ascii=False)
 

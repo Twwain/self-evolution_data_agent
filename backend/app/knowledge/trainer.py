@@ -11,21 +11,22 @@ from typing import Any, Callable, Coroutine
 
 from langfuse import observe
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.metadata import async_session
-from app.knowledge.code_parser import parse_repository
 from app.knowledge.evaluator import evaluate_parse_quality
+from app.knowledge.extraction_agent import run_extraction_agent
 from app.knowledge.git_manager import clone_or_update
-from app.knowledge.parse_result import ParseReport
+from app.knowledge.parse_result import CodeParseResult, ParseReport, ParserStats
 from app.knowledge.schema_builder import (
     build_ddl_from_jpa,
     build_doc_from_jpa,
 )
 from app.knowledge.trainer_purge import purge_legacy_for_full_rebuild
 from app.logging_config import get_logger, trace_id_var
-from app.models import GitRepo, Namespace
+from app.models import GitRepo
+from app.models.base import local_now
+from app.models.extractor_profile import ExtractorProfile
 from app.models.namespace import DataSource
 from app.tracing import get_client as _get_lf_client
 
@@ -38,6 +39,229 @@ ProgressCallback = Callable[[int, str], Coroutine[Any, Any, None]]
 def _repo_name(url: str) -> str:
     """git@gitlab.com:org/foo-service.git → foo-service"""
     return url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+
+
+# ════════════════════════════════════════════
+#  Agent → 下游通道映射 (Phase 2: agentic 提取接线)
+# ════════════════════════════════════════════
+
+def _serialize_sub_fields(sub_fields: list[dict]) -> list[dict]:
+    """agent sub_fields → writer 期望的 dict 格式 (递归)."""
+    out: list[dict] = []
+    for sf in sub_fields:
+        out.append({
+            "name": sf.get("name"),
+            "type": sf.get("type", "String"),
+            "description": sf.get("description") or "",
+            "nullable": sf.get("nullable"), "indexed": sf.get("indexed"),
+            "enum_values": sf.get("enum_values", []),
+            "sub_fields": _serialize_sub_fields(sf.get("sub_fields", [])),
+        })
+    return out
+
+
+def _map_agent_to_channels(
+    agent_objects: list[dict], knowledge_proposals: list[dict],
+    coll_to_db: dict[str, str] | None,
+) -> tuple[CodeParseResult, list[dict]]:
+    """Agent emit 产物 → CodeParseResult 7 通道 + business_examples (sql2nl).
+
+    database 字段留给 write_canonical_candidates_from_parse 经 coll_to_db 补全,
+    此处顺手填一份便于隔离测试与日志。enum_classes 通道留空 — agent 把枚举内联到
+    字段 enum_values; 独立 EnumDictionary 由确定性安全网 (java glob) 兜底。
+    """
+    coll_to_db = coll_to_db or {}
+    jpa_entities: list[dict] = []
+    mongo_documents: list[dict] = []
+    mybatis_entries: list[dict] = []
+    business_terms: list[dict] = []
+    business_rules: list[dict] = []
+    business_examples: list[dict] = []
+
+    for obj in agent_objects:
+        name = obj.get("name")
+        if not name:
+            continue
+        paradigm = obj.get("paradigm", "document")
+        base = {
+            "database": coll_to_db.get(name, ""),
+            "source_ref": obj.get("source_ref") or "",
+            "description": obj.get("description") or "",
+            "fields": [],
+            "relations": [{
+                "from_target": name, "from_field": r.get("from_field"),
+                "to_target": r.get("to_object"), "to_field": r.get("to_field"),
+                "relation_type": r.get("relation_type", "foreign_key"),
+                "is_required": True, "source": "agentic",
+            } for r in obj.get("relations", [])],
+        }
+        for fd in obj.get("fields", []):
+            base["fields"].append({
+                "name": fd.get("name"),
+                "type": fd.get("type", "String"),
+                "description": fd.get("description") or "",
+                "nullable": fd.get("nullable"), "indexed": fd.get("indexed"),
+                "enum_values": fd.get("enum_values", []),
+                "sub_fields": _serialize_sub_fields(fd.get("sub_fields", [])),
+            })
+        if paradigm == "relational":
+            base["table_name"] = name
+            base["table"] = name
+            jpa_entities.append(base)
+        elif paradigm == "document":
+            base["collection"] = name
+            base["collection_name"] = name
+            base["class_name"] = name
+            mongo_documents.append(base)
+
+    for kp in knowledge_proposals:
+        et = kp.get("entry_type")
+        payload = dict(kp.get("payload") or {})
+        if et == "route_hint":
+            payload.setdefault("type", "select")  # _write_route_hints 按 type 过滤非 select
+            mybatis_entries.append(payload)
+        elif et == "terminology":
+            payload.setdefault("primary_collection", "")
+            # primary_database + db_type 均由下游程序化反查, 不让 agent 猜:
+            #   primary_database ← coll_to_db (实际 DB 连接反查表→库)
+            #   db_type          ← writer 经 DataSource 反查
+            primary_coll = payload.get("primary_collection", "")
+            if not payload.get("primary_database"):
+                payload["primary_database"] = coll_to_db.get(primary_coll, "")
+            business_terms.append(payload)
+        elif et == "rule":
+            business_rules.append(payload)
+        elif et == "example":
+            business_examples.append(payload)
+
+    code_result = CodeParseResult(
+        jpa_entities=jpa_entities,
+        mongo_documents=mongo_documents,
+        mybatis_entries=mybatis_entries,
+        business_terms_candidates=business_terms,
+        business_rules_candidates=business_rules,
+    )
+    return code_result, business_examples
+
+
+def _stats_from_agent(objects: list[dict]) -> ParserStats:
+    """合成 ParserStats — agent 无文件级统计, 取对象数与对象名集合."""
+    return ParserStats(
+        items_extracted=len(objects),
+        tables_found=[o.get("name", "") for o in objects if o.get("name")],
+    )
+
+
+async def _load_profile_hint(repo_id: int) -> str | None:
+    """读 git_repos.profile_id → enabled profile 的 hint_text (可选纠偏)."""
+    async with async_session() as db:
+        repo = await db.get(GitRepo, repo_id)
+        if not repo or not repo.profile_id:
+            return None
+        pf = await db.get(ExtractorProfile, repo.profile_id)
+        if pf and pf.is_enabled:
+            return pf.hint_text
+    return None
+
+
+async def _build_coll_to_db(ns_id: int, name: str) -> dict[str, str]:
+    """实时连接 namespace 下各 DataSource, 列其库表/集合 → {对象名: database} 反查表.
+
+    用于补全 agent 产物缺失的 database 字段。连接失败的单个 DS 跳过 (best-effort)。
+    """
+    coll_to_db: dict[str, str] = {}
+    async with async_session() as ds_db:
+        ds_rows = list((await ds_db.execute(
+            select(DataSource).where(DataSource.namespace_id == ns_id)
+        )).scalars().all())
+        for ds in ds_rows:
+            try:
+                if ds.db_type == "mongodb":
+                    from pymongo import MongoClient
+                    client = MongoClient(
+                        host=ds.host, port=ds.port,
+                        username=ds.username, password=ds.password,
+                        authSource="admin",
+                        serverSelectionTimeoutMS=settings.datasource_connect_timeout_ms,
+                    )
+                    colls = sorted(client[ds.database].list_collection_names())
+                    client.close()
+                    for coll in colls:
+                        coll_to_db.setdefault(coll, ds.database)
+                elif ds.db_type == "mysql":
+                    import pymysql
+                    conn = pymysql.connect(
+                        host=ds.host, port=ds.port, database=ds.database,
+                        user=ds.username, password=ds.password,
+                        connect_timeout=settings.datasource_connect_timeout_ms // 1000,
+                    )
+                    with conn.cursor() as cur:
+                        cur.execute("SHOW TABLES")
+                        tables = sorted(row[0] for row in cur.fetchall())
+                    conn.close()
+                    for tbl in tables:
+                        coll_to_db.setdefault(tbl, ds.database)
+                elif ds.db_type == "oracle":
+                    import oracledb  # type: ignore[import-untyped]
+                    importlib.import_module("app.engine.drivers.oracle")
+                    dsn = f"{ds.host}:{ds.port}/{ds.database}"
+                    conn = oracledb.connect(
+                        user=ds.username, password=ds.password, dsn=dsn,
+                        tcp_connect_timeout=settings.oracle_connect_timeout_secs,
+                    )
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT TABLE_NAME FROM USER_TABLES ORDER BY TABLE_NAME")
+                        tables = sorted(row[0] for row in cur.fetchall())
+                    conn.close()
+                    for tbl in tables:
+                        coll_to_db.setdefault(tbl, ds.database)
+            except Exception as e:
+                log.warning("[%s] collection→db 反查连接失败 ds_id=%d db_type=%s: %s",
+                            name, ds.id, ds.db_type, e)
+        await ds_db.commit()
+    if coll_to_db:
+        log.info("[%s] collection→db 反查表 %d 条", name, len(coll_to_db))
+    return coll_to_db
+
+
+async def _run_enum_safety_net(local_path: str, ns_id: int, name: str) -> None:
+    """枚举确定性安全网 (D5/§6.3) — agent 漏标枚举时 Java glob 兜底.
+
+    仅 glob **/*.java (Java-only, 见 spec §6.3 F6); 文件名含 'enum' 的才确定性解析,
+    glob 超时 → 跳过。agent 主路径已语言无关地提取枚举内联到字段 enum_values。
+    """
+    import concurrent.futures
+    import glob as _glob
+    from pathlib import Path as _Path
+
+    _t0 = time.monotonic()
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _exec:
+            _ft = _exec.submit(_glob.glob, f"{local_path}/**/*.java", recursive=True)
+            java_files = _ft.result(timeout=settings.agentic_enum_scan_timeout)
+    except concurrent.futures.TimeoutError:
+        log.warning("[%s] Enum scan glob 超时 (%ds), 跳过", name, settings.agentic_enum_scan_timeout)
+        return
+    _elapsed = time.monotonic() - _t0
+    if _elapsed > 5:
+        log.info("[%s] Enum glob 耗时 %.1fs, 匹配 %d 文件", name, _elapsed, len(java_files))
+
+    enum_files = [f for f in java_files if "enum" in _Path(f).name.lower()]
+    if not enum_files:
+        return
+
+    from app.knowledge.enum_dictionary_writer import upsert_enum_dictionary_from_code
+    from app.knowledge.enum_extractor import parse_enum_classes_batch
+
+    enum_defs, _ = parse_enum_classes_batch(enum_files)
+    if not enum_defs:
+        return
+    async with async_session() as enum_db:
+        for enum_def in enum_defs:
+            if enum_def.enum_class:
+                await upsert_enum_dictionary_from_code(enum_db, ns_id, enum_def)
+        await enum_db.commit()
+    log.info("[%s] enum 安全网: %d 个 enum 类落 EnumDictionary", name, len(enum_defs))
 
 
 def _sync_trace_id_to_log() -> None:
@@ -74,68 +298,6 @@ async def _update_repo_fields(repo_id: int, **fields):
             for k, v in fields.items():
                 setattr(repo, k, v)
             await db.commit()
-
-
-
-@observe(name="repo_training", as_type="chain")
-async def run_training_pipeline(
-    db: AsyncSession, ns: Namespace, repo: GitRepo
-) -> ParseReport:
-    """
-    完整训练流程:
-    1. 克隆/更新仓库
-    2. LLM 统一解析 (替代三个 AST parser)
-    3. 构建文档 (schema_builder 不变)
-    4. 灌入对应引擎
-    5. LLM 质量评估
-    6. 存储报告
-    """
-    _sync_trace_id_to_log()
-    start = time.time()
-    report = ParseReport(repo_id=repo.id)
-    name = _repo_name(repo.url)
-
-    try:
-        repo.parse_status = "cloning"
-        await db.commit()
-
-        # ── 1. 克隆 ──
-        local_path, git_op = clone_or_update(repo.url, repo.branch, repo.id)
-        repo.local_path = local_path
-
-        # ── 2. LLM 解析 ──
-        code_result, stats = parse_repository(local_path, repo_name=name)
-        report.stats = stats
-
-        # ── 3. 构建文档 (schema_builder 零改动) ──
-        ddls = build_ddl_from_jpa(code_result.jpa_entities)
-        jpa_docs = build_doc_from_jpa(code_result.jpa_entities)
-
-        # ── 4. MySQL RAG 训练路径已删除 ──
-        # MySQL schema 信息现在通过 SchemaCanonicalObject + driver introspect 提供,
-        # 不再需要 DDL/SQL RAG 训练.
-        _ = ddls, jpa_docs  # 保留入参兼容, 不训练
-
-        # ── 5. LLM 质量评估 ──
-        all_trained = ddls + jpa_docs
-        report.duration_seconds = round(time.time() - start, 2)
-        report = evaluate_parse_quality(report, all_trained)
-
-        # ── 6. 存储 ──
-        repo.parse_status = "parsed"
-        repo.error_message = ""
-        from datetime import datetime
-        repo.parsed_at = datetime.now()
-        repo.parse_report = json.dumps(_report_to_dict(report), ensure_ascii=False)
-
-    except Exception as e:
-        repo.parse_status = "error"
-        repo.error_message = str(e)
-        report.duration_seconds = round(time.time() - start, 2)
-        report.evaluation_summary = f"训练失败: {e}"
-
-    await db.commit()
-    return report
 
 
 def _report_to_dict(report: ParseReport) -> dict:
@@ -247,20 +409,54 @@ async def run_training_pipeline_with_progress(
         name, purge_result.get("ke_deleted", 0), purge_result.get("term_conflicts", 0),
     )
 
-    # ── 2. LLM 解析 (10-40%) — to_thread 避免阻塞事件循环 ──
+    # ── 2. Agent 解析 (10-40%) — 替代旧 parse_repository ──
     await _update_repo_status(repo_id, "parsing")
-    await on_progress(12, "LLM 解析代码...")
+    await on_progress(12, "LLM Agent 探索代码...")
     t_parse = time.time()
-    code_result, stats = await asyncio.to_thread(parse_repository, local_path, repo_name=name)
-    report.stats = stats
+    hint_text = await _load_profile_hint(repo_id)
+    result = await run_extraction_agent(repo_path=local_path, hint_text=hint_text, repo_name=name)
+
+    # ── Step 3a: agent 状态守卫 ──
+    if result.status == "failed":
+        log.error("[%s] extraction agent failed: %s", name, result.reason)
+        # 失败留痕: agentic LLM 调用失败写 ExtractionFailureLog, 供失败审计页可观测
+        # (旧 Java pipeline 经 llm_retry 留痕; agentic 路径在此显式补回)
+        async with async_session() as fail_db:
+            from app.knowledge.explain_gate import write_extraction_failure
+            await write_extraction_failure(
+                fail_db,
+                namespace_id=ns_id,
+                repo_id=repo_id,
+                extraction_kind="agentic_extraction",
+                failure_type="llm_server_error",
+                failure_message=result.reason or "agent error",
+            )
+            await fail_db.commit()
+        await _update_repo_fields(repo_id, parse_status="error",
+                                  error_message=result.reason or "agent error")
+        report.evaluation_summary = f"提取失败: {result.reason}"
+        report.duration_seconds = round(time.time() - start, 2)
+        await on_progress(100, "提取失败")
+        return report
+    if result.status == "partial":
+        log.warning("[%s] extraction agent partial: %s (objects=%d)",
+                    name, result.reason, len(result.objects))
+        await on_progress(38, f"提取部分完成: {result.reason} — {len(result.objects)} objects")
+
+    report.stats = _stats_from_agent(result.objects)
     log.info(
-        "[%s] 解析完成 耗时 %.1fs 实体=%d SQL映射=%d Mongo文档=%d",
-        name, time.time() - t_parse,
-        len(code_result.jpa_entities),
-        len(code_result.mybatis_entries),
-        len(code_result.mongo_documents),
+        "[%s] Agent 解析完成 耗时 %.1fs 对象=%d 知识=%d",
+        name, time.time() - t_parse, len(result.objects), len(result.knowledge_proposals),
     )
     await on_progress(40, "代码解析完成")
+
+    # ── collection→db 反查表 (实时连 DataSource, 供 database 补全) ──
+    coll_to_db = await _build_coll_to_db(ns_id, name)
+
+    # ── agent 产物 → 7 通道 + business_examples (sql2nl) ──
+    code_result, business_examples = _map_agent_to_channels(
+        result.objects, result.knowledge_proposals, coll_to_db,
+    )
 
     # ── 3. 构建文档 (40-50%) — 纯计算, to_thread 保险 ──
     await on_progress(42, "构建 Schema 文档...")
@@ -271,73 +467,9 @@ async def run_training_pipeline_with_progress(
              name, len(ddls), len(jpa_docs))
     await on_progress(50, "文档构建完成")
 
-    # ── 4.5 写入 schema canonical candidates (新) ──
+    # ── 4.5 写入 schema canonical candidates ──
     await on_progress(56, "写入 schema 候选...")
     from app.knowledge.extraction_writer import write_canonical_candidates_from_parse
-
-    # 构建 collection/table → database 反查表 (实时连接 DataSource)
-    coll_to_db: dict[str, str] = {}
-    async with async_session() as ds_db:
-        ds_rows = list((await ds_db.execute(
-            select(DataSource).where(
-                DataSource.namespace_id == ns_id,
-            )
-        )).scalars().all())
-        for ds in ds_rows:
-            try:
-                if ds.db_type == "mongodb":
-                    from pymongo import MongoClient
-                    client = MongoClient(
-                        host=ds.host, port=ds.port,
-                        username=ds.username, password=ds.password,
-                        authSource="admin",
-                        serverSelectionTimeoutMS=settings.datasource_connect_timeout_ms,
-                    )
-                    colls = sorted(client[ds.database].list_collection_names())
-                    client.close()
-                    for coll in colls:
-                        if coll not in coll_to_db:
-                            coll_to_db[coll] = ds.database
-                elif ds.db_type == "mysql":
-                    import pymysql
-                    conn = pymysql.connect(
-                        host=ds.host, port=ds.port, database=ds.database,
-                        user=ds.username, password=ds.password,
-                        connect_timeout=settings.datasource_connect_timeout_ms // 1000,
-                    )
-                    with conn.cursor() as cur:
-                        cur.execute("SHOW TABLES")
-                        tables = sorted(row[0] for row in cur.fetchall())
-                    conn.close()
-                    for tbl in tables:
-                        if tbl not in coll_to_db:
-                            coll_to_db[tbl] = ds.database
-                elif ds.db_type == "oracle":
-                    # 导入 OracleDriver 模块确保 _maybe_init_thick_mode() 已执行
-                    # （IS_ORACLE_THICK_MODE_LIB_DIR 非空时必须先 init_oracle_client）
-                    import oracledb  # type: ignore[import-untyped]
-
-                    importlib.import_module("app.engine.drivers.oracle")
-                    dsn = f"{ds.host}:{ds.port}/{ds.database}"
-                    conn = oracledb.connect(
-                        user=ds.username,
-                        password=ds.password,
-                        dsn=dsn,
-                        tcp_connect_timeout=settings.oracle_connect_timeout_secs,
-                    )
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT TABLE_NAME FROM USER_TABLES ORDER BY TABLE_NAME")
-                        tables = sorted(row[0] for row in cur.fetchall())
-                    conn.close()
-                    for tbl in tables:
-                        if tbl not in coll_to_db:
-                            coll_to_db[tbl] = ds.database
-            except Exception as e:
-                log.warning("[%s] collection→db 反查连接失败 ds_id=%d db_type=%s: %s",
-                            name, ds.id, ds.db_type, e)
-        await ds_db.commit()
-    if coll_to_db:
-        log.info("[%s] collection→db 反查表 %d 条", name, len(coll_to_db))
 
     await write_canonical_candidates_from_parse(
         namespace_id=ns_id,
@@ -345,37 +477,15 @@ async def run_training_pipeline_with_progress(
         jpa_entities=code_result.jpa_entities,
         mongo_documents=code_result.mongo_documents,
         enum_classes=code_result.enum_classes,
-        relationships=code_result.relationships,
         where_evidence=code_result.where_evidence,
         coll_to_db=coll_to_db or None,
         repo_name=name,
     )
 
-    # ── 4.5b upsert EnumDictionary (enum-knowledge-binding) ──
-    if code_result.enum_classes:
-        from app.knowledge.enum_dictionary_writer import upsert_enum_dictionary_from_code
-        from app.knowledge.enum_extractor import EnumDef, EnumValue
+    # ── 4.5b enum 确定性安全网 (D5/§6.3 — agent 漏标兜底, Java glob) ──
+    await _run_enum_safety_net(local_path, ns_id, name)
 
-        async with async_session() as enum_db:
-            for ec in code_result.enum_classes:
-                values = ec.get("values") or []
-                enum_def = EnumDef(
-                    enum_class=ec.get("enum_class", ""),
-                    fully_qualified_name=ec.get("fully_qualified_name", ""),
-                    values=[
-                        EnumValue(
-                            name=v["name"],
-                            db_value=v.get("db_value", v["name"]),
-                            description=v.get("description"),
-                        )
-                        for v in values
-                    ],
-                )
-                if enum_def.enum_class:
-                    await upsert_enum_dictionary_from_code(enum_db, ns_id, enum_def)
-            await enum_db.commit()
-
-    # ── 4.6 写入 knowledge entries proposed (新) ──
+    # ── 4.6 写入 knowledge entries proposed (含 sql2nl business_examples) ──
     await on_progress(60, "写入知识候选...")
     from app.knowledge.extraction_writer import extract_and_write_knowledge
     async with async_session() as ke_db:
@@ -386,6 +496,7 @@ async def run_training_pipeline_with_progress(
             mybatis_entries=code_result.mybatis_entries,
             business_terms=code_result.business_terms_candidates,
             business_rules=code_result.business_rules_candidates,
+            business_examples=business_examples,
             repo_name=name,
         )
         await ke_db.commit()
@@ -402,12 +513,11 @@ async def run_training_pipeline_with_progress(
              name, time.time() - t_eval, report.completeness_score)
 
     # ── 6. 存储结果 — 短命 session ──
-    from datetime import datetime
     await _update_repo_fields(
         repo_id,
         parse_status="parsed",
         error_message="",
-        parsed_at=datetime.now(),
+        parsed_at=local_now(),
         parse_report=json.dumps(_report_to_dict(report), ensure_ascii=False),
     )
 

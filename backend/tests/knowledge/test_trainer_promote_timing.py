@@ -25,6 +25,7 @@ import pytest
 import pytest_asyncio
 
 from app.knowledge import trainer as trainer_module
+from app.knowledge.extraction_agent import ExtractionResult
 from app.knowledge.parse_result import CodeParseResult, ParserStats
 from app.models.git_repo import GitRepo
 from app.models.namespace import Namespace
@@ -33,9 +34,6 @@ from app.models.namespace import Namespace
 def _stub_heavy_pipeline_stages(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_clone_or_update(url, branch, repo_id):
         return ("/tmp/fake-repo", "cloned")
-
-    def _fake_parse_repository(local_path):
-        return CodeParseResult(), ParserStats()
 
     def _fake_build_docs(code_result):
         return ([], [])
@@ -46,9 +44,13 @@ def _stub_heavy_pipeline_stages(monkeypatch: pytest.MonkeyPatch) -> None:
         return report
 
     monkeypatch.setattr(trainer_module, "clone_or_update", _fake_clone_or_update)
-    monkeypatch.setattr(trainer_module, "parse_repository", _fake_parse_repository)
+    monkeypatch.setattr(trainer_module, "run_extraction_agent", _fake_run_extraction_agent)
     monkeypatch.setattr(trainer_module, "_build_docs", _fake_build_docs)
     monkeypatch.setattr(trainer_module, "evaluate_parse_quality", _fake_evaluate)
+
+
+async def _fake_run_extraction_agent(*, repo_path, hint_text=None, max_iterations=None):
+    return ExtractionResult(objects=[], status="ok")
 
 
 @pytest_asyncio.fixture

@@ -19,13 +19,18 @@ _BOXING_MAP = {
 }
 
 
+def _field_key(f: dict) -> str:
+    """返回字段的唯一名称键 — name 优先, field 兜底 (存量旧数据)."""
+    return f.get("name") or f.get("field", "")
+
+
 def _fields_equivalent(fields_a: list[dict], fields_b: list[dict], depth: int = 0) -> bool:
     """递归比较两组 sub_fields 是否结构等价."""
     if depth > _MAX_DEPTH:
         return True
 
-    idx_a = {f["field"]: f for f in fields_a if "field" in f}
-    idx_b = {f["field"]: f for f in fields_b if "field" in f}
+    idx_a = {_field_key(f): f for f in fields_a if _field_key(f)}
+    idx_b = {_field_key(f): f for f in fields_b if _field_key(f)}
 
     if idx_a.keys() != idx_b.keys():
         return False
@@ -67,14 +72,14 @@ def _enrich_descriptions(target: dict, all_choices: list[dict], depth: int = 0):
     sub_pool: dict[str, list[dict]] = {}
     for ch in all_choices:
         for sf in ch.get("sub_fields", []):
-            fname = sf.get("field", "")
+            fname = _field_key(sf)
             if fname and sf.get("description") and fname not in desc_pool:
                 desc_pool[fname] = sf["description"]
             if fname and sf.get("sub_fields"):
                 sub_pool.setdefault(fname, []).append(sf)
 
     for sf in target_subs:
-        fname = sf.get("field", "")
+        fname = _field_key(sf)
         if fname and not sf.get("description") and fname in desc_pool:
             sf["description"] = desc_pool[fname]
         if fname and sf.get("sub_fields") and fname in sub_pool:
