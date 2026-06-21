@@ -11,23 +11,22 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import delete as sa_delete, update as sa_update
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_admin_or_above, require_ns_manage
 from app.db.metadata import get_db
 from app.knowledge.canonical_audit import write_canonical_audit_log
 from app.knowledge.schema_canonical import (
-    get_schema_canonical,
     list_schema_canonicals,
     refresh_mysql_canonicals,
-    upsert_schema_canonical,
 )
 from app.models import SchemaCanonicalObject
+from app.models.base import local_now
 from app.models.enum_binding_conflict import EnumBindingConflict
 from app.models.schema_canonical_candidate import SchemaCanonicalCandidate
 from app.models.schema_canonical_conflict import SchemaCanonicalConflict
@@ -115,7 +114,7 @@ async def _close_open_conflicts(
         .values(
             status="resolved",
             resolved_by=user.id,
-            resolved_at=datetime.now(),
+            resolved_at=local_now(),
             resolution_reason="table deleted",
         )
     )
@@ -215,8 +214,6 @@ async def patch_canonical(
 
     修订 #3: 任何 PATCH 都自动标 user_locked=True, 防止下次 promote 覆盖人工编辑.
     """
-    from app.knowledge.canonical_audit import write_canonical_audit_log
-
     obj = await db.get(SchemaCanonicalObject, sco_id)
     if not obj or obj.namespace_id != ns_id:
         raise HTTPException(404, "schema canonical not found")
@@ -230,7 +227,7 @@ async def patch_canonical(
 
     # 修订 #3: auto-lock on patch
     obj.user_locked = True
-    obj.updated_at = datetime.now()
+    obj.updated_at = local_now()
 
     await write_canonical_audit_log(
         db, namespace_id=ns_id, action="user_lock",
