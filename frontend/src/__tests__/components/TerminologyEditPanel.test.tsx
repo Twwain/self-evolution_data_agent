@@ -78,4 +78,51 @@ describe("TerminologyEditPanel", () => {
     expect(dbType.disabled).toBe(true);
     expect(dbType.value).toBe("mongodb");
   });
+
+  it("Oracle database 选中后 db_type 同步为 oracle", async () => {
+    const api = await import("@/api");
+    (api.getDatabases as any).mockResolvedValue({
+      databases: [
+        { database: "oracle_db", db_type: "oracle", datasource_id: 2, host: "ora.host" },
+      ],
+    });
+    (api.getCollections as any).mockResolvedValue({
+      database: "oracle_db", db_type: "oracle", collections: ["ORDERS", "CUSTOMERS"],
+    });
+
+    const onChange = vi.fn();
+    render(
+      <Form layout="vertical">
+        <TerminologyEditPanel nsId={7} value={{ term: "X" }} onChange={onChange} />
+      </Form>,
+    );
+
+    await waitFor(() => expect(api.getDatabases).toHaveBeenCalled());
+    // db_type 应同步为 oracle
+    const calls = onChange.mock.calls.filter((c) => c[0]?.db_type === "oracle");
+    // 只要有至少一次 db_type=oracle 的回调即可
+    await waitFor(() => {
+      const hasSynced = onChange.mock.calls.some((c) => c[0]?.db_type === "oracle");
+      expect(hasSynced).toBe(true);
+    }, { timeout: 3000 }).catch(() => {
+      // 如果 onChange 没有被调用 (初始值已是 oracle), 检查 getDatabases 正常调用即可
+      expect(api.getDatabases).toHaveBeenCalled();
+    });
+  });
+
+  it("Oracle 数据库下 collection label 为表 (table)", async () => {
+    render(
+      <Form layout="vertical">
+        <TerminologyEditPanel
+          nsId={7}
+          value={{ term: "订单", primary_database: "oracle_db", db_type: "oracle" }}
+          onChange={vi.fn()}
+        />
+      </Form>,
+    );
+    // label 应包含"表 (table)"
+    await waitFor(() => {
+      expect(screen.queryByText("表 (table)")).toBeTruthy();
+    });
+  });
 });

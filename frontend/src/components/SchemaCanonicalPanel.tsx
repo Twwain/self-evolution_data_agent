@@ -9,6 +9,7 @@ import { Badge, Button, message, Select, Space, Tabs } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
 
 import { schemaCanonicalApi, terminologyApi } from "@/api";
+import { DB_TYPE_META, type DbType } from "@/types";
 import type {
   PendingCounts,
   SchemaCanonicalField,
@@ -43,7 +44,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
   const [activeKey, setActiveKey] = useState("all");
   const [selectedSco, setSelectedSco] = useState<SchemaCanonicalObject | null>(null);
   const [loading, setLoading] = useState(false);
-  const [dbType, setDbType] = useState<"all" | "mysql" | "mongodb">("all");
+  const [dbType, setDbType] = useState<"all" | DbType>("all");
 
   // Evidence drawer state
   const [evidenceDrawer, setEvidenceDrawer] = useState<{
@@ -256,7 +257,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
       children: (
         <EnumDictionaryTab
           namespaceId={namespaceId}
-          dbType={dbType === "all" ? "mongodb" : dbType}
+          dbType={dbType === "all" ? (Object.keys(DB_TYPE_META)[0] as DbType) : dbType}
         />
       ),
     },
@@ -316,8 +317,10 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
             onChange={setDbType}
             options={[
               { value: "all", label: "全部" },
-              { value: "mysql", label: "MySQL" },
-              { value: "mongodb", label: "MongoDB" },
+              ...Object.entries(DB_TYPE_META).map(([key, meta]) => ({
+                value: key,
+                label: meta.label,
+              })),
             ]}
             style={{ width: 140 }}
           />

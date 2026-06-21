@@ -238,8 +238,12 @@ async def test_purge_cascade_deletes_resolved_conflicts(async_session, chroma_is
         await db.commit()
 
     async with async_session() as db:
-        assert await db.get(TerminologyConflict, resolved_id) is None, \
-            "resolved 应随 canonical KE CASCADE 删除"
+        # 用 select 查 DB 真实状态 (db.get 会命中 identity-map 缓存的旧对象;
+        # DB 级 CASCADE 删除不经 ORM, 缓存对象不会失效 → 必须走 SQL 查询)
+        still = (await db.execute(
+            select(TerminologyConflict).where(TerminologyConflict.id == resolved_id)
+        )).scalar_one_or_none()
+        assert still is None, "resolved 应随 canonical KE CASCADE 删除"
 
 
 @pytest.mark.asyncio
@@ -282,3 +286,53 @@ async def test_purge_chromadb_failure_does_not_block_sql_commit(
             )
         )).scalars().all()
         assert len(remaining) == 0, "SQL 已 commit 不回滚, KE 应删干净"
+
+
+@pytest.mark.asyncio
+async def test_purge_deletes_pending_candidates_keeps_decided(
+    seeded_repo_with_mixed_kes, async_session, chroma_isolated,
+):
+    """I2: 全量重建删 status='pending' 候选, 保留人审决策态 (active/rejected).
+
+    注: promoted 候选的真实状态是 'active' (见 canonical_promote.py _finalize_losers /
+    单候选 promote), 非 review 文档草案误写的 'promoted'。本测用真实状态值。
+    """
+    from app.knowledge.trainer import purge_legacy_for_full_rebuild
+    from app.models.schema_canonical_candidate import SchemaCanonicalCandidate
+
+    ns_id, repo_id = seeded_repo_with_mixed_kes
+
+    # 建 3 候选 (同 repo, 不同 value_hash): pending / active(promoted后) / rejected
+    async with async_session() as db:
+        for i, status in enumerate(("pending", "active", "rejected")):
+            db.add(SchemaCanonicalCandidate(
+                namespace_id=ns_id,
+                db_type="mysql",
+                database="test_db",
+                target="orders",
+                field_path=f"f{i}",
+                candidate_kind="field_description",
+                candidate_value_json='{"description": "x"}',
+                value_hash=f"hash_{status}_{i}",
+                evidence_sources_json="[]",
+                status=status,
+                confidence_status="confirmed_by_code",
+                repo_id=repo_id,
+                generation=0,
+            ))
+        await db.commit()
+
+    async with async_session() as db:
+        await purge_legacy_for_full_rebuild(db, repo_id, ns_id)
+        await db.commit()
+
+    async with async_session() as db:
+        remaining = (await db.execute(
+            select(SchemaCanonicalCandidate.status).where(
+                SchemaCanonicalCandidate.repo_id == repo_id
+            )
+        )).scalars().all()
+
+    assert "pending" not in remaining, "pending 候选应被全量重建清除"
+    assert set(remaining) == {"active", "rejected"}, \
+        f"人审决策态 (active/rejected) 应保留, 实测 {remaining}"

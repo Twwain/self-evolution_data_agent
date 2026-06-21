@@ -46,6 +46,8 @@ class SchemaCanonicalOut(BaseModel):
     purpose_detail: str
     sample_count: int
     source: str
+    relationships: list[dict] = []
+    user_locked: bool = False
 
     @classmethod
     def from_orm(cls, obj: SchemaCanonicalObject) -> "SchemaCanonicalOut":
@@ -57,6 +59,10 @@ class SchemaCanonicalOut(BaseModel):
             indexes = json.loads(obj.indexes_json or "[]")
         except json.JSONDecodeError:
             indexes = []
+        try:
+            relationships = json.loads(obj.relationships_json or "[]")
+        except json.JSONDecodeError:
+            relationships = []
         return cls(
             id=obj.id,
             namespace_id=obj.namespace_id,
@@ -69,6 +75,8 @@ class SchemaCanonicalOut(BaseModel):
             purpose_detail=obj.purpose_detail or "",
             sample_count=obj.sample_count,
             source=obj.source or "introspect",
+            relationships=relationships,
+            user_locked=obj.user_locked,
         )
 
 

@@ -26,6 +26,7 @@ dependencies = [
     "json-repair>=0.50.0",  # LLM 残缺 JSON 本地修复 (未转义引号/尾随逗号等)
     "pyahocorasick>=2.0.0",  # AC 自动机术语精确匹配
     "aiomysql>=0.2.0",
+    "oracledb>=2.0.0",
     "sqlparse>=0.5.0",
     "pandas>=2.0.0",
     "langfuse>=2.0.0",
@@ -36,6 +37,7 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.6.0",
+    "hypothesis>=6.0.0",   # property-based testing (test_json_parser, test_mongo_flavor 等)
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -54,7 +56,10 @@ asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 markers = [
     "real_llm: tests that require a real LLM API key (skipped by default in CI; gated to acceptance phase)",
+    "live_llm: tests that hit a real LLM (agentic extractor live tests; opt-in via -m live_llm)",
     "live: real-system tests, opt-in via -m live",
+    "slow: long-running tests, opt-in via -m slow",
+    "timeout: tests with explicit timeout constraints",
 ]
 
 [tool.ruff]

@@ -357,6 +357,76 @@ async def _ensure_enum_sync_tables(engine: AsyncEngine) -> None:
     log.info("[schema_migrations] enum_sync_queue + enum_binding_conflicts ensured (migration_012)")
 
 
+# ── ExtractorProfile (agentic-repo-extractor Phase 0) ────────────────────────
+
+_EXTRACTOR_PROFILES_NEW_COLS: list[ColumnSpec] = [
+    ("profile_id", "INT REFERENCES extractor_profiles(id) ON DELETE SET NULL"),
+]
+
+
+async def _ensure_extractor_profiles_table(engine: AsyncEngine) -> None:
+    """幂等建 extractor_profiles 表 + GIN 索引. Agentic extractor Phase 0."""
+    ddl_table = """
+    CREATE TABLE IF NOT EXISTS extractor_profiles (
+        id            SERIAL PRIMARY KEY,
+        name          VARCHAR(100) NOT NULL,
+        display_name  VARCHAR(200) NOT NULL,
+        description   TEXT NOT NULL DEFAULT '',
+        languages     JSONB NOT NULL DEFAULT '["Java"]',
+        hint_text     TEXT NOT NULL DEFAULT '',
+        is_builtin    BOOLEAN NOT NULL DEFAULT FALSE,
+        is_enabled    BOOLEAN NOT NULL DEFAULT TRUE,
+        namespace_id  INT REFERENCES namespaces(id) ON DELETE CASCADE,
+        created_at    TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Shanghai'),
+        updated_at    TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'Asia/Shanghai'),
+        UNIQUE (name, namespace_id)
+    )
+    """
+    ddl_idx = "CREATE INDEX IF NOT EXISTS idx_profile_langs ON extractor_profiles USING GIN (languages)"
+    async with engine.begin() as conn:
+        await conn.execute(text(ddl_table))
+        await conn.execute(text(ddl_idx))
+    log.info("[schema_migrations] extractor_profiles table ensured")
+
+
+async def _repair_terminology_conflict_cascade_fk(engine: AsyncEngine) -> None:
+    """确保 terminology_conflicts.existing_entry_id 的 FK 为 ON DELETE CASCADE.
+
+    模型声明 ondelete='CASCADE', 但长生命周期库的旧表在 FK 添加前已建, create_all
+    不改既有表约束 → FK 缺失/非 cascade。purge 删 KE 时无法级联清 resolved conflict
+    (残留孤儿)。本迁移按需重建 FK (幂等: 已是 cascade 则跳过)。
+    """
+    ddl = """
+    DO $$
+    DECLARE con_name text; del_type char;
+    BEGIN
+        SELECT con.conname, con.confdeltype INTO con_name, del_type
+        FROM pg_constraint con
+        JOIN pg_class rel ON rel.oid = con.conrelid
+        JOIN pg_attribute a ON a.attnum = ANY(con.conkey) AND a.attrelid = con.conrelid
+        WHERE rel.relname = 'terminology_conflicts' AND con.contype = 'f'
+          AND a.attname = 'existing_entry_id'
+        LIMIT 1;
+        IF con_name IS NULL OR del_type <> 'c' THEN
+            -- 先清孤儿行 (existing_entry_id 指向已删 KE), 否则 ADD CONSTRAINT 失败
+            DELETE FROM terminology_conflicts tc
+            WHERE NOT EXISTS (
+                SELECT 1 FROM knowledge_entries ke WHERE ke.id = tc.existing_entry_id
+            );
+            IF con_name IS NOT NULL THEN
+                EXECUTE 'ALTER TABLE terminology_conflicts DROP CONSTRAINT ' || quote_ident(con_name);
+            END IF;
+            ALTER TABLE terminology_conflicts
+                ADD CONSTRAINT terminology_conflicts_existing_entry_id_fkey
+                FOREIGN KEY (existing_entry_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE;
+        END IF;
+    END $$;
+    """
+    async with engine.begin() as conn:
+        await conn.execute(text(ddl))
+    log.info("[schema_migrations] terminology_conflicts existing_entry_id FK ensured ON DELETE CASCADE")
+
+
 async def run_all(engine: AsyncEngine) -> None:
     """Run all startup schema migrations idempotently. Extend here for new tables."""
     await ensure_knowledge_entry_columns(engine)
@@ -425,6 +495,13 @@ async def run_all(engine: AsyncEngine) -> None:
         ("description", "TEXT NOT NULL DEFAULT ''"),
         ("db_profile_json", "TEXT NOT NULL DEFAULT '{}'"),
     ])
+    # agentic-repo-extractor Phase 0: extractor_profiles 表 + git_repos.profile_id FK + 种子数据
+    await _ensure_extractor_profiles_table(engine)
+    await _add_missing(engine, "git_repos", _EXTRACTOR_PROFILES_NEW_COLS)
+    from app.db.seed_data import ensure_extractor_profile_seeds
+    await ensure_extractor_profile_seeds(engine)
+    # 修复 terminology_conflicts.existing_entry_id FK 缺失 ON DELETE CASCADE (长生命周期库漂移)
+    await _repair_terminology_conflict_cascade_fk(engine)
 
 
 async def _migrate_rbac_three_tier(engine: AsyncEngine) -> None:

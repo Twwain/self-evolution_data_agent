@@ -30,3 +30,7 @@ class GitRepo(Base):
     # 取值: pending | ok | partial | failed | unknown_error
     term_refresh_status: Mapped[str] = mapped_column(String(20), default="pending")
     term_refresh_stats_json: Mapped[str] = mapped_column(Text, default="{}")  # RefreshReport.to_dict() JSON
+    # ── agentic extractor profile (可选纠偏) ──
+    profile_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("extractor_profiles.id", ondelete="SET NULL"), nullable=True
+    )

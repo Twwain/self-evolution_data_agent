@@ -44,6 +44,7 @@ class MySQLDriver:
     """aiomysql 连接池驱动, 实现 DataSourceDriver 协议."""
 
     db_type: str = "mysql"
+    paradigm: str = "relational"
 
     def __init__(self) -> None:
         self._pools: dict[int, aiomysql.Pool] = {}
@@ -313,6 +314,17 @@ class MySQLDriver:
         except Exception:
             return False
 
+    # ── list_object_names ────────────────────────────────
+
+    async def list_object_names(self, ds: DataSource) -> list[str]:
+        """SHOW TABLES → 返回库内全部表名 (sorted)."""
+        pool = await self._get_pool(ds)
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SHOW TABLES")
+                rows = await cur.fetchall()
+                return sorted(r[0] for r in rows)
+
     # ── get_server_capabilities ──────────────────────────
 
     async def get_server_capabilities(
@@ -419,6 +431,10 @@ class MySQLDriver:
                 "SQL 包含禁止的 DML/DDL 关键字",
                 suggestion="仅允许 SELECT 查询",
             )
+
+    def strip_outer_row_limit(self, sql: str) -> str:
+        """公开行数保护剥离方法，供 plan_executor render/count 路径调用."""
+        return self._strip_outer_limit(sql)
 
     @staticmethod
     def _strip_outer_limit(sql: str) -> str:

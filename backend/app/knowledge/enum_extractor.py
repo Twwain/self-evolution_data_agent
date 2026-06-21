@@ -276,7 +276,7 @@ def _resolve_enum_class(
     if not _is_base_type(ftype):
         return None, ""
 
-    fname = field.get("field") or field.get("name", "")
+    fname = field.get("name", "")
     match = _match_by_root(fname, enum_class_index)
     if match:
         return match, "name_heuristic"
@@ -329,7 +329,7 @@ def enrich_entity_fields_with_enum_index(
                 f["_enum_class_name"] = ec
             else:
                 # miss 但字段名含 enum 后缀 → pending
-                fname = f.get("field") or f.get("name", "")
+                fname = f.get("name", "")
                 tokens = _split_camel(fname)
                 if len(tokens) >= 2 and (tokens[-1][:1].upper() + tokens[-1][1:]) in ENUM_NAME_SUFFIXES:
                     f["_enum_match_status"] = "pending"
@@ -348,7 +348,7 @@ def _walk_for_pending(fields: list[dict[str, Any]]) -> None:
     for f in fields:
         if f.get("enum_values"):
             continue
-        fname = f.get("field") or f.get("name", "")
+        fname = f.get("name", "")
         tokens = _split_camel(fname)
         if len(tokens) >= 2 and (tokens[-1][:1].upper() + tokens[-1][1:]) in ENUM_NAME_SUFFIXES:
             f["_enum_match_status"] = "pending"

@@ -178,6 +178,11 @@ async def test_execute_plan_overrides_planner_limit_and_counts_true_total(monkey
     captured: list[tuple[str, str]] = []
 
     class FakeDriver:
+        def strip_outer_row_limit(self, sql: str) -> str:
+            """SqlDataSourceDriver 协议方法 — 剥离末尾 LIMIT (复用 MySQLDriver 实现)."""
+            from app.engine.drivers.mysql import MySQLDriver
+            return MySQLDriver._strip_outer_limit(sql)
+
         async def execute_query(self, ds, target, query, mode="single", batch_size=1000):
             sql = (query or {}).get("sql", "")
             captured.append((mode, sql))
@@ -223,6 +228,10 @@ async def test_execute_plan_exact_limit_not_truncated(monkeypatch):
     monkeypatch.setattr(settings, "render_row_limit", 5)
 
     class FakeDriver:
+        def strip_outer_row_limit(self, sql: str) -> str:
+            from app.engine.drivers.mysql import MySQLDriver
+            return MySQLDriver._strip_outer_limit(sql)
+
         async def execute_query(self, ds, target, query, mode="single", batch_size=1000):
             if mode == "render":
                 return {"rows": [{"d": i} for i in range(5)], "row_count": 5, "truncated": True}

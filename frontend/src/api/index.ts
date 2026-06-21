@@ -308,7 +308,7 @@ export const previewConflict = (body: {
 
 export interface NamespaceDatabase {
   database: string;
-  db_type: "mysql" | "mongodb";
+  db_type: import("@/types").DbType;
   datasource_id: number;
   host: string;
 }
@@ -320,7 +320,7 @@ export const getDatabases = (nsId: number) =>
 
 export const getCollections = (nsId: number, database: string) =>
   http
-    .get<{ database: string; db_type: "mysql" | "mongodb" | null; collections: string[] }>(
+    .get<{ database: string; db_type: import("@/types").DbType | null; collections: string[] }>(
       `/namespaces/${nsId}/collections`,
       { params: { database } },
     )
@@ -448,7 +448,7 @@ export const terminologyApi = {
 
 export interface EnumCandidateBody {
   namespace_id: number;
-  db_type: "mongodb" | "mysql";
+  db_type: import("@/types").DbType;
   enum_class_name: string;
   values: { name: string; db_value: number | string; description?: string | null }[];
   comment?: string;
@@ -520,3 +520,42 @@ export const enumApi = {
       )
       .then((r) => r.data),
 };
+
+
+// ════════════════════════════════════════════
+//  Extractor Profile API (agentic-repo-extractor)
+// ════════════════════════════════════════════
+
+export interface ProfileOut {
+  id: number;
+  name: string;
+  display_name: string;
+  description: string;
+  languages: string[];
+  hint_text: string;
+  is_builtin: boolean;
+  is_enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export const fetchProfiles = () =>
+  http.get<ProfileOut[]>("/profiles").then((r) => r.data);
+
+export const createProfile = (data: {
+  name: string;
+  display_name: string;
+  description?: string;
+  languages?: string[];
+  hint_text?: string;
+}) => http.post<ProfileOut>("/profiles", data).then((r) => r.data);
+
+export const updateProfile = (id: number, data: Record<string, any>) =>
+  http.patch<ProfileOut>(`/profiles/${id}`, data).then((r) => r.data);
+
+export const deleteProfile = (id: number) =>
+  http.delete(`/profiles/${id}`);
+
+export const updateRepoProfile = (nsId: number, repoId: number, profileId: number | null) =>
+  http.patch<GitRepo>(`/namespaces/${nsId}/repos/${repoId}`, { profile_id: profileId })
+    .then((r) => r.data);

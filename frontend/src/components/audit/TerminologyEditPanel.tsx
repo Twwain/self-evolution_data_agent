@@ -14,12 +14,14 @@
 import React, { useEffect, useState } from "react";
 import { Form, Input, Select } from "antd";
 import { getCollections, getDatabases, type NamespaceDatabase } from "@/api";
+import type { DbType } from "@/types";
+import { DB_TYPE_META } from "@/types";
 
 export interface TerminologyPayload {
   term?: string;
   primary_collection?: string;
   primary_database?: string;
-  db_type?: "mysql" | "mongodb";
+  db_type?: DbType;
   synonyms?: string[];
   source_collections?: string[];
 }
@@ -83,11 +85,11 @@ export default function TerminologyEditPanel({
 
   const collections = currentDb ? (collectionsByDb[currentDb] ?? []) : [];
 
-  // ── label 按 db_type 区分: mysql 用"表/table", mongodb 用"集合/collection" ──
+  // ── label 按 db_type 的 isSql 区分: document 用"集合/collection", relational 用"表/table" ──
   const collectionLabel =
-    value.db_type === "mysql" ? "表 (table)" : "集合 (collection)";
+    !DB_TYPE_META[value.db_type as keyof typeof DB_TYPE_META]?.isSql ? "集合 (collection)" : "表 (table)";
   const collectionPlaceholder =
-    value.db_type === "mysql" ? "选择表" : "选择集合";
+    !DB_TYPE_META[value.db_type as keyof typeof DB_TYPE_META]?.isSql ? "选择集合" : "选择表";
 
   const handleDatabaseChange = (db: string) => {
     // ── primary_database 切换 → 强制重置 collection (避免脏数据) ──

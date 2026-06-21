@@ -29,6 +29,7 @@ import {
 } from "@ant-design/icons";
 import * as api from "@/api";
 import type { BatchStatus, DataSource, GitRepo, ParseReport } from "@/types";
+import { DB_TYPE_META } from "@/types";
 import styles from "@/styles/namespace.module.css";
 
 const { Text } = Typography;
@@ -44,6 +45,15 @@ interface Props {
 const RepoManager: React.FC<Props> = ({ nsId, datasources, repos, batchStatus, onReposChange }) => {
   const [repoForm] = Form.useForm();
   const [parsing, setParsing] = useState<Set<number>>(new Set());
+  const [profiles, setProfiles] = useState<api.ProfileOut[]>([]);
+
+  useEffect(() => {
+    api.fetchProfiles().then(setProfiles).catch(() => {});
+  }, []);
+
+  const profileOptions = profiles
+    .filter((p) => p.is_enabled)
+    .map((p) => ({ label: `${p.display_name}${p.description ? ` — ${p.description}` : ""}`, value: p.id }));
 
   /* ── 报告展开 ── */
   const [expandedRepoId, setExpandedRepoId] = useState<number | null>(null);
@@ -83,6 +93,16 @@ const RepoManager: React.FC<Props> = ({ nsId, datasources, repos, batchStatus, o
     await api.deleteRepo(nsId, repoId);
     message.success("仓库已删除");
     onReposChange();
+  };
+
+  const handleChangeProfile = async (repoId: number, profileId: number | null) => {
+    try {
+      await api.updateRepoProfile(nsId, repoId, profileId);
+      message.success("Profile 已更新，重新解析以应用");
+      onReposChange();
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || "更新失败");
+    }
   };
 
   const handleParse = async (repoId: number) => {
@@ -217,6 +237,9 @@ const RepoManager: React.FC<Props> = ({ nsId, datasources, repos, batchStatus, o
           <Form.Item name="branch" initialValue="master">
             <Input placeholder="分支" style={{ width: 100 }} />
           </Form.Item>
+          <Form.Item name="profile_id" label="Profile" tooltip="选择正确的 profile 可提高 schema 识别准确率。不确定可不选。">
+            <Select allowClear placeholder="不选 (自动识别)" style={{ width: 220 }} options={profileOptions} />
+          </Form.Item>
           <Button type="primary" onClick={handleAddRepo}>添加</Button>
         </Form>
         {pendingCount > 0 && (
@@ -253,6 +276,17 @@ const RepoManager: React.FC<Props> = ({ nsId, datasources, repos, batchStatus, o
               </div>
               <div className={styles.dsMeta}>
                 {repo.branch} · {repo.parsed_at ? `上次解析: ${repo.parsed_at}` : "未解析"}
+              </div>
+              <div style={{ marginTop: 4 }}>
+                <Select
+                  size="small"
+                  allowClear
+                  placeholder="Profile: 不选 (自动识别)"
+                  style={{ width: 260 }}
+                  value={repo.profile_id ?? undefined}
+                  options={profileOptions}
+                  onChange={(v) => handleChangeProfile(repo.id, (v as number) ?? null)}
+                />
               </div>
               {/* 进度条 */}
               {repo.worker_id && (
@@ -325,17 +359,21 @@ const RepoManager: React.FC<Props> = ({ nsId, datasources, repos, batchStatus, o
                   💡 此仓库包含混合数据库架构（MySQL {report.ddls_trained} 个表 + MongoDB 集合），建议同时映射两种类型的数据源
                 </div>
               )}
-              {mappings.map((m: any) => (
+              {mappings.map((m: any) => {
+                const ds = datasources.find((d: any) => d.id === m.datasource_id);
+                const dbType = ds?.db_type as keyof typeof DB_TYPE_META | undefined;
+                return (
                 <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                  <Tag color={datasources.find((d) => d.id === m.datasource_id)?.db_type === "mongodb" ? "blue" : "green"}>
-                    {datasources.find((d) => d.id === m.datasource_id)?.database || `DS#${m.datasource_id}`}
-                    ({datasources.find((d) => d.id === m.datasource_id)?.db_type})
+                  <Tag color={DB_TYPE_META[dbType!]?.color ?? "green"}>
+                    {ds?.database || `DS#${m.datasource_id}`}
+                    ({ds?.db_type})
                   </Tag>
                   <Popconfirm title="移除映射?" onConfirm={() => handleDeleteMapping(m.id)}>
                     <Button size="small" danger type="link">移除</Button>
                   </Popconfirm>
                 </div>
-              ))}
+                );
+              })}
               <Select
                 placeholder="添加数据源映射"
                 style={{ width: 300, marginTop: 4 }}

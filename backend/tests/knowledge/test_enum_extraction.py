@@ -14,17 +14,19 @@ from unittest.mock import patch
 
 import pytest
 
-from app.knowledge.code_parser import (
-    _parse_enum_classes_batch,
-    _scan_enum_classes,
-)
 from app.knowledge.enum_extractor import (
     EnumDef,
     EnumValue,
     build_enum_class_index,
     enrich_entity_fields_with_enum_index,
+    parse_enum_classes_batch,
     scan_enum_classes,
 )
+
+# code_parser 已随 2026-06-17-agentic-repo-extractor 删除; enum 扫描/解析逻辑现归
+# enum_extractor (公共函数)。别名保持既有测试体不变, 覆盖迁移到 canonical 模块。
+_scan_enum_classes = scan_enum_classes
+_parse_enum_classes_batch = parse_enum_classes_batch
 
 
 # ════════════════════════════════════════════
@@ -107,12 +109,12 @@ class TestParseEnumClassesBatch:
             ],
         })
 
-        with patch("app.knowledge.code_parser.chat_completion", return_value=llm_response):
+        with patch("app.knowledge.enum_extractor.chat_completion", return_value=llm_response):
             enum_classes, index = _parse_enum_classes_batch([enum_file])
 
         assert len(enum_classes) == 1
-        assert enum_classes[0]["enum_class"] == "OrderStatus"
-        assert len(enum_classes[0]["values"]) == 2
+        assert enum_classes[0].enum_class == "OrderStatus"
+        assert len(enum_classes[0].values) == 2
 
     def test_dual_key_index(self, tmp_path):
         """enum_class_index 同时用 simple_name 和 fqn 索引"""
@@ -129,7 +131,7 @@ class TestParseEnumClassesBatch:
             ],
         })
 
-        with patch("app.knowledge.code_parser.chat_completion", return_value=llm_response):
+        with patch("app.knowledge.enum_extractor.chat_completion", return_value=llm_response):
             _, index = _parse_enum_classes_batch([enum_file])
 
         # 双索引都能命中
@@ -144,7 +146,7 @@ class TestParseEnumClassesBatch:
             "package com.x;\n\npublic enum Bad { A; }\n"
         )
 
-        with patch("app.knowledge.code_parser.chat_completion", return_value="not json at all"):
+        with patch("app.knowledge.enum_extractor.chat_completion", return_value="not json at all"):
             enum_classes, index = _parse_enum_classes_batch([enum_file])
 
         assert enum_classes == []
@@ -173,11 +175,11 @@ class TestParseEnumClassesBatch:
                 "values": [{"name": "X", "db_value": "X", "description": None}],
             })
 
-        with patch("app.knowledge.code_parser.chat_completion", side_effect=mock_llm):
+        with patch("app.knowledge.enum_extractor.chat_completion", side_effect=mock_llm):
             enum_classes, index = _parse_enum_classes_batch([bad_file, good_file])
 
         assert len(enum_classes) == 1
-        assert enum_classes[0]["enum_class"] == "Good"
+        assert enum_classes[0].enum_class == "Good"
 
     def test_skips_empty_values(self, tmp_path):
         """LLM 返回 values 为空数组 → 跳过"""
@@ -191,7 +193,7 @@ class TestParseEnumClassesBatch:
             "values": [],
         })
 
-        with patch("app.knowledge.code_parser.chat_completion", return_value=llm_response):
+        with patch("app.knowledge.enum_extractor.chat_completion", return_value=llm_response):
             enum_classes, index = _parse_enum_classes_batch([enum_file])
 
         assert enum_classes == []
@@ -247,8 +249,8 @@ class TestEnrichEntityFieldsWithEnumIndex:
         mongo_docs = [{
             "collection": "orders",
             "fields": [
-                {"field": "status", "type": "OrderStatus", "description": "状态"},
-                {"field": "amount", "type": "BigDecimal"},
+                {"name": "status", "type": "OrderStatus", "description": "状态"},
+                {"name": "amount", "type": "BigDecimal"},
             ],
         }]
 
@@ -263,7 +265,7 @@ class TestEnrichEntityFieldsWithEnumIndex:
         mongo_docs = [{
             "collection": "orders",
             "fields": [
-                {"field": "statuses", "type": "List<OrderStatus>"},
+                {"name": "statuses", "type": "List<OrderStatus>"},
             ],
         }]
 
@@ -276,11 +278,11 @@ class TestEnrichEntityFieldsWithEnumIndex:
         mongo_docs = [{
             "collection": "orders",
             "fields": [{
-                "field": "detail",
+                "name": "detail",
                 "type": "OrderDetail",
                 "sub_fields": [
-                    {"field": "status", "type": "OrderStatus"},
-                    {"field": "note", "type": "String"},
+                    {"name": "status", "type": "OrderStatus"},
+                    {"name": "note", "type": "String"},
                 ],
             }],
         }]
@@ -395,14 +397,14 @@ class TestResolveEnumClass:
     def test_layer1_hint_hit(self, resolve_enum_index):
         from app.knowledge.enum_extractor import _resolve_enum_class
 
-        f = {"type": "Integer", "field": "status", "enum_class_hint": "OrderStatus"}
+        f = {"type": "Integer", "name": "status", "enum_class_hint": "OrderStatus"}
         ec, src = _resolve_enum_class(f, resolve_enum_index)
         assert ec == "OrderStatus" and src == "code_hint"
 
     def test_layer1_hint_with_fqn(self, resolve_enum_index):
         from app.knowledge.enum_extractor import _resolve_enum_class
 
-        f = {"type": "Integer", "field": "status", "enum_class_hint": "com.x.OrderStatus"}
+        f = {"type": "Integer", "name": "status", "enum_class_hint": "com.x.OrderStatus"}
         ec, src = _resolve_enum_class(f, resolve_enum_index)
         assert ec == "OrderStatus" and src == "code_hint"
 
@@ -410,35 +412,35 @@ class TestResolveEnumClass:
         from app.knowledge.enum_extractor import _resolve_enum_class
 
         # type 字面也命中, 但 hint 优先
-        f = {"type": "OrderStatus", "field": "status", "enum_class_hint": "OrderStatus"}
+        f = {"type": "OrderStatus", "name": "status", "enum_class_hint": "OrderStatus"}
         ec, src = _resolve_enum_class(f, resolve_enum_index)
         assert src == "code_hint"
 
     def test_layer2_type_hit(self, resolve_enum_index):
         from app.knowledge.enum_extractor import _resolve_enum_class
 
-        f = {"type": "OrderStatus", "field": "status"}
+        f = {"type": "OrderStatus", "name": "status"}
         ec, src = _resolve_enum_class(f, resolve_enum_index)
         assert ec == "OrderStatus" and src == "code_type"
 
     def test_layer3_generic_inner(self, resolve_enum_index):
         from app.knowledge.enum_extractor import _resolve_enum_class
 
-        f = {"type": "List<OrderStatus>", "field": "statuses"}
+        f = {"type": "List<OrderStatus>", "name": "statuses"}
         ec, src = _resolve_enum_class(f, resolve_enum_index)
         assert ec == "OrderStatus" and src == "code_type_generic"
 
     def test_layer4_root_match(self, resolve_enum_index):
         from app.knowledge.enum_extractor import _resolve_enum_class
 
-        f = {"type": "Integer", "field": "orderStatus"}
+        f = {"type": "Integer", "name": "orderStatus"}
         ec, src = _resolve_enum_class(f, resolve_enum_index)
         assert ec == "OrderStatus" and src == "name_heuristic"
 
     def test_layer4_multi_candidate_takes_shortest(self, resolve_enum_index):
         from app.knowledge.enum_extractor import _resolve_enum_class
 
-        f = {"type": "Integer", "field": "deleteStatus"}
+        f = {"type": "Integer", "name": "deleteStatus"}
         ec, src = _resolve_enum_class(f, resolve_enum_index)
         assert ec == "DeleteStatus"  # 而非 DeleteStatusEnum
 
@@ -446,21 +448,21 @@ class TestResolveEnumClass:
         from app.knowledge.enum_extractor import _resolve_enum_class
 
         # moduleType 词根 ['module'] != ModuleMarkResourceType 词根 ['module','mark','resource']
-        f = {"type": "Integer", "field": "moduleType"}
+        f = {"type": "Integer", "name": "moduleType"}
         ec, src = _resolve_enum_class(f, resolve_enum_index)
         assert ec is None
 
     def test_layer4_single_token_field_misses(self, resolve_enum_index):
         from app.knowledge.enum_extractor import _resolve_enum_class
 
-        f = {"type": "Integer", "field": "type"}
+        f = {"type": "Integer", "name": "type"}
         ec, src = _resolve_enum_class(f, resolve_enum_index)
         assert ec is None
 
     def test_layer4_unknown_suffix_misses(self, resolve_enum_index):
         from app.knowledge.enum_extractor import _resolve_enum_class
 
-        f = {"type": "Integer", "field": "orderName"}  # Name 不在 ENUM_NAME_SUFFIXES
+        f = {"type": "Integer", "name": "orderName"}  # Name 不在 ENUM_NAME_SUFFIXES
         ec, src = _resolve_enum_class(f, resolve_enum_index)
         assert ec is None
 
@@ -468,7 +470,7 @@ class TestResolveEnumClass:
         from app.knowledge.enum_extractor import _resolve_enum_class
 
         # type 是 enum 类但 enum_index 中没有 → Layer 2 miss → 不进 Layer 4 (因为 type 非基础类型)
-        f = {"type": "PaymentStatus", "field": "paymentStatus"}
+        f = {"type": "PaymentStatus", "name": "paymentStatus"}
         ec, src = _resolve_enum_class(f, resolve_enum_index)
         assert ec is None
 
@@ -476,7 +478,7 @@ class TestResolveEnumClass:
         from app.knowledge.enum_extractor import _resolve_enum_class
 
         # hint 指向 enum_index 没有的类, layer1 miss, 但其他 layer 也 miss
-        f = {"type": "Integer", "field": "isDeleted", "enum_class_hint": "GoneStatus"}
+        f = {"type": "Integer", "name": "isDeleted", "enum_class_hint": "GoneStatus"}
         ec, src = _resolve_enum_class(f, resolve_enum_index)
         assert ec is None
 
@@ -520,7 +522,7 @@ class TestEnrichWritesSourceMetadata:
         entities: list[dict] = []
         mongo_docs = [{
             "class_name": "OrderEntity", "collection": "orders",
-            "fields": [{"field": "status", "type": "Integer", "enum_class_hint": "OrderStatus"}],
+            "fields": [{"name": "status", "type": "Integer", "enum_class_hint": "OrderStatus"}],
         }]
         enrich_entity_fields_with_enum_index(entities, mongo_docs, enum_index)
         f = mongo_docs[0]["fields"][0]
@@ -532,7 +534,7 @@ class TestEnrichWritesSourceMetadata:
         entities: list[dict] = []
         mongo_docs = [{
             "class_name": "OrderEntity", "collection": "orders",
-            "fields": [{"field": "orderStatus", "type": "Integer"}],
+            "fields": [{"name": "orderStatus", "type": "Integer"}],
         }]
         enrich_entity_fields_with_enum_index(entities, mongo_docs, enum_index)
         f = mongo_docs[0]["fields"][0]
@@ -543,7 +545,7 @@ class TestEnrichWritesSourceMetadata:
         entities: list[dict] = []
         mongo_docs = [{
             "class_name": "Doc", "collection": "docs",
-            "fields": [{"field": "moduleType", "type": "Integer"}],
+            "fields": [{"name": "moduleType", "type": "Integer"}],
         }]
         enrich_entity_fields_with_enum_index(entities, mongo_docs, enum_index)
         f = mongo_docs[0]["fields"][0]
@@ -554,7 +556,7 @@ class TestEnrichWritesSourceMetadata:
         entities: list[dict] = []
         mongo_docs = [{
             "class_name": "Doc", "collection": "docs",
-            "fields": [{"field": "amount", "type": "Integer"}],
+            "fields": [{"name": "amount", "type": "Integer"}],
         }]
         enrich_entity_fields_with_enum_index(entities, mongo_docs, enum_index)
         f = mongo_docs[0]["fields"][0]
@@ -567,7 +569,7 @@ class TestEnrichWritesSourceMetadata:
         mongo_docs = [{
             "class_name": "Doc", "collection": "docs",
             "fields": [{
-                "field": "status", "type": "Integer",
+                "name": "status", "type": "Integer",
                 "enum_class_hint": "OrderStatus",
                 "enum_values": existing,
             }],

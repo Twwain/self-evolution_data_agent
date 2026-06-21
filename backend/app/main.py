@@ -401,6 +401,10 @@ from app.api import schema_canonical_v2 as schema_canonical_v2_api
 app.include_router(schema_canonical_v2_api.router)
 app.include_router(schema_canonical_api.router)
 
+# agentic-repo-extractor: Profile CRUD
+from app.api import profile as profile_api
+app.include_router(profile_api.router)
+
 
 @app.get("/api/health")
 async def health(db: AsyncSession = Depends(get_db)):

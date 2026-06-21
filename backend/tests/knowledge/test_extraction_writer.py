@@ -4,7 +4,7 @@ Validates:
 - JPA entities produce table_description + field_description candidates
 - Enum classes produce enum_values candidates
 - Relationships produce relationship candidates
-- mybatis_entries produce example KE
+- mybatis_entries produce route_hint KE; business_examples (sql2nl) produce example KE (D3)
 - business_rules produce rule KE
 - Concurrent writes to same target do not raise UniqueViolationError
 """
@@ -56,6 +56,15 @@ async def db_session(db_engine: AsyncEngine) -> AsyncSession:
         yield session
 
 
+@pytest.fixture(autouse=True)
+def _patch_writer_session(db_engine, monkeypatch):
+    """writer 内部用 app.db.metadata.async_session (指向 dev DB); 测试库与 dev 库
+    不同 → 写入 candidate 撞 FK。绑定到测试 engine 的 sessionmaker, 使写入落测试库。"""
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    monkeypatch.setattr("app.knowledge.extraction_writer.async_session", factory)
+    monkeypatch.setattr("app.knowledge.canonical_candidate.async_session", factory, raising=False)
+
+
 @pytest_asyncio.fixture
 async def seeded(db_session: AsyncSession) -> tuple[int, int]:
     """Create namespace + datasource + repo, return (ns_id, repo_id)."""
@@ -98,6 +107,12 @@ async def cleanup(db_session: AsyncSession, seeded):
             KnowledgeEntry.namespace_id == ns_id,
         )
     )
+    await db_session.execute(
+        delete(DataSource).where(DataSource.namespace_id == ns_id)
+    )
+    await db_session.execute(
+        delete(Namespace).where(Namespace.id == ns_id)
+    )
     await db_session.commit()
 
 
@@ -127,7 +142,7 @@ async def test_write_candidates_from_jpa_entities(db_session, seeded):
         namespace_id=ns_id, repo_id=repo_id,
         jpa_entities=jpa_entities,
         mongo_documents=[], enum_classes=[],
-        relationships=[], where_evidence=[],
+        where_evidence=[],
     )
 
     # table_description + 2 field_description (amount has empty desc → skipped) + 1 enum_values
@@ -171,7 +186,7 @@ async def test_write_candidates_from_enum_classes(db_session, seeded):
         namespace_id=ns_id, repo_id=repo_id,
         jpa_entities=[], mongo_documents=[],
         enum_classes=enum_classes,
-        relationships=[], where_evidence=[],
+        where_evidence=[],
     )
 
     assert total == 1
@@ -194,27 +209,28 @@ async def test_write_candidates_from_enum_classes(db_session, seeded):
 
 @pytest.mark.asyncio
 async def test_write_candidates_from_relationships(db_session, seeded):
+    """relationship candidate 由 entity writer 内联产生 — 与 field 共享 db_type/database/gate."""
     ns_id, repo_id = seeded
 
-    relationships = [{
-        "from_db_type": "mysql",
-        "from_database": "test_db",
-        "from_target": "t_order_item",
-        "from_field": "order_id",
-        "to_db_type": "mysql",
-        "to_database": "test_db",
-        "to_target": "t_order",
-        "to_field": "id",
-        "relation_type": "many_to_one",
-        "is_required": True,
-        "evidence": [{"source": "code_jpa_relation", "file": "OrderItem.java"}],
+    jpa_entities = [{
+        "table_name": "t_order_item",
+        "table": "t_order_item",
+        "database": "test_db",
+        "source_file": "OrderItem.java",
+        "fields": [],
+        "relations": [{
+            "from_target": "t_order_item",
+            "from_field": "order_id",
+            "to_target": "t_order",
+            "to_field": "id",
+            "relation_type": "many_to_one",
+        }],
     }]
 
     total = await write_canonical_candidates_from_parse(
         namespace_id=ns_id, repo_id=repo_id,
-        jpa_entities=[], mongo_documents=[],
-        enum_classes=[], relationships=relationships,
-        where_evidence=[],
+        jpa_entities=jpa_entities, mongo_documents=[],
+        enum_classes=[], where_evidence=[],
     )
 
     assert total == 1
@@ -229,6 +245,8 @@ async def test_write_candidates_from_relationships(db_session, seeded):
     cand = rows[0]
     assert cand.candidate_kind == "relationship"
     assert cand.target == "t_order_item"
+    assert cand.db_type == "mysql"
+    assert cand.database == "test_db"
     val = json.loads(cand.candidate_value_json)
     assert val["to_target"] == "t_order"
     assert val["relation_type"] == "many_to_one"
@@ -262,12 +280,12 @@ async def test_concurrent_write_same_target_no_error(db_session, seeded):
         write_canonical_candidates_from_parse(
             namespace_id=ns_id, repo_id=repo_id,
             jpa_entities=[], mongo_documents=[doc],
-            enum_classes=[], relationships=[], where_evidence=[],
+            enum_classes=[], where_evidence=[],
         ),
         write_canonical_candidates_from_parse(
             namespace_id=ns_id, repo_id=repo2.id,
             jpa_entities=[], mongo_documents=[doc],
-            enum_classes=[], relationships=[], where_evidence=[],
+            enum_classes=[], where_evidence=[],
         ),
     )
 
@@ -287,8 +305,8 @@ async def test_concurrent_write_same_target_no_error(db_session, seeded):
 
 
 # ════════════════════════════════════════════════════════════════
-#  extract_and_write_knowledge — rule / route_hint / terminology 出口
-#  (example 出口已下线, Stage A spec 2026-05-25)
+#  extract_and_write_knowledge — rule / route_hint / terminology / example 出口
+#  (example 出口由 sql2nl business_examples 恢复, D3 — 2026-06-17-agentic-repo-extractor)
 # ════════════════════════════════════════════════════════════════
 
 
@@ -330,3 +348,58 @@ async def test_extract_and_write_knowledge_creates_rule_ke(db_session, seeded):
     assert payload["rule_kind"] == "filter_default"
     assert payload["applies_to_collections"] == ["t_order"]
     assert payload["evidence"]["frequency"] == 0.92
+
+
+@pytest.mark.asyncio
+async def test_extract_and_write_knowledge_creates_example_ke(db_session, seeded):
+    """D3: business_examples (sql2nl) → entry_type=example KE 写入验证."""
+    ns_id, repo_id = seeded
+
+    business_examples = [{
+        "sql_pattern": "SELECT * FROM orders WHERE status = ? ORDER BY created_at DESC",
+        "tables": ["orders"],
+        "question": "按状态查订单并按创建时间倒序",
+        "mapper_namespace": "com.example.OrderMapper",
+    }]
+
+    total = await extract_and_write_knowledge(
+        db_session,
+        namespace_id=ns_id, repo_id=repo_id,
+        mybatis_entries=[], business_terms=[], business_rules=[],
+        business_examples=business_examples,
+    )
+    await db_session.commit()
+
+    assert total == 1
+
+    rows = (await db_session.execute(
+        select(KnowledgeEntry).where(
+            KnowledgeEntry.namespace_id == ns_id,
+            KnowledgeEntry.entry_type == "example",
+        )
+    )).scalars().all()
+    assert len(rows) == 1
+
+    ke = rows[0]
+    assert ke.status == "proposed"
+    assert ke.source == "mybatis_extract"
+    assert ke.repo_id == repo_id
+    payload = json.loads(ke.payload)
+    assert payload["sql_pattern"].startswith("SELECT * FROM orders")
+    assert payload["tables"] == ["orders"]
+    assert payload["question_pattern"] == "按状态查订单并按创建时间倒序"
+    assert payload["source_mapper"] == "com.example.OrderMapper"
+
+
+@pytest.mark.asyncio
+async def test_extract_and_write_knowledge_skips_empty_example(db_session, seeded):
+    """business_examples 缺 sql_pattern → 跳过, 不产 example KE."""
+    ns_id, repo_id = seeded
+    total = await extract_and_write_knowledge(
+        db_session,
+        namespace_id=ns_id, repo_id=repo_id,
+        mybatis_entries=[], business_terms=[], business_rules=[],
+        business_examples=[{"tables": ["orders"], "question": "x"}],  # 无 sql_pattern
+    )
+    await db_session.commit()
+    assert total == 0

@@ -12,6 +12,7 @@ from app.models.base import Base, LOCAL_NOW
 
 ExtractionKind = Literal[
     "mybatis_example", "enum_class", "relationship", "where_evidence",
+    "agentic_extraction",
 ]
 FailureType = Literal[
     "unknown_table", "unknown_column", "syntax_error",

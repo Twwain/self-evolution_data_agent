@@ -328,6 +328,89 @@ class TestPreValidateVarsSqlEmbedded:
 
 
 @pytest.mark.asyncio
+async def test_execute_plan_oracle_step_enters_sql_driver():
+    """Oracle SQL step 应走 _execute_sql_step 路径 (不落入 MongoDB 分支)."""
+    driver = _mock_driver([{"order_id": 1, "total": 100.0}])
+    # strip_outer_row_limit 是 SqlDataSourceDriver 协议方法
+    driver.strip_outer_row_limit = lambda sql: sql
+
+    plan = QueryPlan(
+        strategy="single_aggregate",
+        steps=[_step(idx=1, db="sales_db", db_type="oracle", op="sql",
+                     query={"sql": "SELECT ORDER_ID, TOTAL FROM ORDERS WHERE ROWNUM <= 100"})],
+    )
+    with patch("app.engine.tools._resolve_ds.resolve_ds", new=AsyncMock(return_value=_mock_ds())), \
+         patch("app.engine.drivers.get_driver", return_value=driver):
+        result = await execute_plan(plan, slug="ns", ns_id=1)
+
+    driver.execute_query.assert_awaited_once()
+    assert result.final == [{"order_id": 1, "total": 100.0}]
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_mongo_to_oracle_var_injection():
+    """Mongo→Oracle: step1 导出 ids, step2 Oracle SQL 的 IN 列表注入实际值."""
+    call_count = [0]
+    captured = {}
+
+    async def _execute_query(ds, target, query, mode="single", **kw):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return {"rows": [{"cust_id": 10}, {"cust_id": 20}], "row_count": 2,
+                    "truncated": False, "elapsed_ms": 5}
+        captured["sql"] = query["sql"]
+        return {"rows": [{"total": 999.0}], "row_count": 1, "truncated": False, "elapsed_ms": 5}
+
+    driver = MagicMock()
+    driver.execute_query = AsyncMock(side_effect=_execute_query)
+    driver.strip_outer_row_limit = lambda sql: sql  # SqlDataSourceDriver 协议方法
+
+    step1 = _step(idx=1, db="catalog_db", db_type="mongodb", op="aggregate",
+                  pipeline=[{"$project": {"cust_id": 1}}], exports=["cust_id"])
+    step2 = _step(
+        idx=2,
+        db="sales_db",
+        db_type="oracle",
+        op="sql",
+        query={
+            "sql": (
+                "SELECT SUM(AMOUNT) AS total FROM ORDERS "
+                "WHERE CUST_ID IN ({{step1.cust_id}})"
+            )
+        },
+    )
+    plan = QueryPlan(strategy="multi_step", steps=[step1, step2])
+
+    with patch("app.engine.tools._resolve_ds.resolve_ds", new=AsyncMock(return_value=_mock_ds())), \
+         patch("app.engine.drivers.get_driver", return_value=driver):
+        result = await execute_plan(plan, slug="ns", ns_id=1)
+
+    assert "IN (10, 20)" in captured["sql"]
+    assert result.final == [{"total": 999.0}]
+
+
+@pytest.mark.asyncio
+async def test_execute_plan_unknown_db_type_raises_not_mongo():
+    """未知 db_type 应明确抛 UnsupportedDataSourceTypeError, 不落入 MongoDB 分支."""
+    from app.engine.drivers._exceptions import UnsupportedDataSourceTypeError
+
+    plan = QueryPlan(
+        strategy="single_aggregate",
+        steps=[_step(idx=1, db_type="postgresql", op="sql",
+                     query={"sql": "SELECT 1"})],
+    )
+    with patch("app.engine.tools._resolve_ds.resolve_ds", new=AsyncMock(return_value=_mock_ds())), \
+         patch(
+             "app.engine.drivers.get_driver",
+             side_effect=UnsupportedDataSourceTypeError("postgresql"),
+         ):
+        with pytest.raises(PlanExecutionError) as ei:
+            await execute_plan(plan, slug="ns", ns_id=1)
+    # PlanExecutionError 包裹了 UnsupportedDataSourceTypeError
+    assert isinstance(ei.value.cause, UnsupportedDataSourceTypeError)
+
+
+@pytest.mark.asyncio
 async def test_execute_plan_mysql_downstream_var_injection():
     """Mongo→MySQL: step1 导出 ids, step2 SQL 的 IN 列表注入实际值."""
     driver = MagicMock()

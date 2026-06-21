@@ -1,0 +1,30 @@
+{
+  "_comment": "G1b golden schema — CI 可执行。仅含通用词 order/customer/address/status。@Embedded 铺平: Address 内层列 (street/city/zip_code) 按 @Column 列名直接作为 orders 字段, 外层属性 shippingAddress 不是 DB 列 → 无 sub_fields 层 (对齐 prompt naming_contract)。",
+  "objects": {
+    "orders": {
+      "fields": [
+        "id", "customer_id", "status", "total_amount", "created_at",
+        "street", "city", "zip_code"
+      ],
+      "sub_fields": {},
+      "enum_fields": {
+        "status": ["PENDING", "CONFIRMED", "SHIPPED", "DELIVERED", "CANCELLED"]
+      }
+    },
+    "customers": {
+      "fields": ["id", "name", "email", "phone"],
+      "sub_fields": {},
+      "enum_fields": {}
+    }
+  },
+  "relationships": [
+    {
+      "from_object": "orders",
+      "from_field": "customer_id",
+      "to_object": "customers",
+      "to_field": "id",
+      "type": "many_to_one"
+    }
+  ],
+  "enum_classes": ["OrderStatus"]
+}

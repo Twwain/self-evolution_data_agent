@@ -18,7 +18,7 @@ class TerminologyPayload(BaseModel):
     term: str
     primary_collection: str
     primary_database: str
-    db_type: Literal["mysql", "mongodb"]
+    db_type: Literal["mysql", "mongodb", "oracle"]  # ← 与 DRIVERS 注册表同步 (SUPPORTED_DB_TYPES); Python 不支持 Literal[*frozenset] 故手动列举
     primary_field: str | None = None
     synonyms: list[str] = []
     source_collections: list[str] = []

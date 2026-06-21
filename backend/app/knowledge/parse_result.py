@@ -43,7 +43,6 @@ class CodeParseResult:
     mongo_query_patterns: list[dict] = field(default_factory=list)
     # ── Phase 2 新增抽取通道 ──
     enum_classes: list[dict] = field(default_factory=list)
-    relationships: list[dict] = field(default_factory=list)
     where_evidence: list[dict] = field(default_factory=list)
     business_terms_candidates: list[dict] = field(default_factory=list)
     business_rules_candidates: list[dict] = field(default_factory=list)

@@ -10,9 +10,30 @@ export interface Namespace {
   created_at: string;
 }
 
+/** 所有支持的数据库类型 — 全局唯一定义, 组件/API 通过此类型而非散落的 union */
+export type DbType = "mysql" | "mongodb" | "oracle";
+
+/**
+ * 数据库类型元信息 — 前端唯一 db_type 元数据中心。
+ * 新增数据库时: 扩充 DbType union + 加一行 DB_TYPE_META。与 backend DRIVERS 注册表同步维护。
+ */
+export interface DbTypeMeta {
+  short: string;
+  label: string;
+  color: string;
+  isSql: boolean;
+  defaultPort: number;
+}
+
+export const DB_TYPE_META: Record<DbType, DbTypeMeta> = {
+  mysql:   { short: "My", label: "MySQL",   color: "blue",    isSql: true,  defaultPort: 3306 },
+  mongodb: { short: "Mg", label: "MongoDB", color: "green",   isSql: false, defaultPort: 27017 },
+  oracle:  { short: "Or", label: "Oracle",  color: "red",     isSql: true,  defaultPort: 1521 },
+};
+
 export interface DataSource {
   id: number;
-  db_type: "mysql" | "mongodb";
+  db_type: DbType;
   host: string;
   port: number;
   database: string;
@@ -35,6 +56,7 @@ export interface GitRepo {
   worker_id: string;
   progress: number;
   progress_message: string;
+  profile_id?: number | null;  // agentic extractor profile (NULL=自动识别)
 }
 
 export interface BatchStatus {

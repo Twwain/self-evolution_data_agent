@@ -11,7 +11,7 @@ interface Props {
   open: boolean;
   mode: "create" | "edit";
   namespaceId: number;
-  dbType: "mongodb" | "mysql";
+  dbType: import("@/types").DbType;
   initial?: { enum_class_name: string; values: EnumValueItem[]; comment?: string };
   onClose: () => void;
   onSubmit: (payload: {

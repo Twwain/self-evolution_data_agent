@@ -198,4 +198,41 @@ test.describe.serial("数据源目录 UI", () => {
     await expect(card.getByText(/v\d/)).toBeVisible();
     await expect(card.getByText("e2e profile card")).toBeVisible();
   });
+
+  // Oracle 卡片渲染验收: 建源成功后卡片展示 "Or" 徽标 + Oracle db_type 标签.
+  // 无 Oracle 测试环境时 skip.
+  test("Oracle 建源成功后卡片渲染 Or 徽标 (组件 F Oracle)", async ({ page }) => {
+    const host = process.env.E2E_ORACLE_HOST;
+    test.skip(!host, "E2E_ORACLE_* 未配置, 跳过 Oracle 卡片渲染断言");
+
+    const create = await page.request.post(
+      `${BACKEND}/api/namespaces/${ns.id}/datasources`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        data: {
+          db_type: "oracle",
+          host,
+          port: Number(process.env.E2E_ORACLE_PORT || "1521"),
+          database: process.env.E2E_ORACLE_SERVICE,
+          username: process.env.E2E_ORACLE_USER,
+          password: process.env.E2E_ORACLE_PASS,
+          description: "e2e oracle card",
+        },
+      },
+    );
+    expect(create.status(), await create.text()).toBe(201);
+    const created = await create.json();
+
+    await gotoNamespacePage(page);
+    const card = page
+      .locator('[data-testid="ds-card"]')
+      .filter({ hasText: created.database });
+    await expect(card).toBeVisible();
+    // Oracle 卡片应显示 "Or" 徽标
+    await expect(card.getByText("Or")).toBeVisible();
+    // db_type 标签行中含 ORACLE 字样
+    await expect(card.getByText(/ORACLE/i)).toBeVisible();
+    // 刷新 Schema 按钮应可见 (isSql=true)
+    await expect(card.getByRole("button", { name: /刷新.*Schema/ })).toBeVisible();
+  });
 });

@@ -142,13 +142,6 @@ class Settings(BaseSettings):
     """单次 EXPLAIN 超时, env: IS_EXPLAIN_GATE_TIMEOUT_SECS"""
     explain_gate_batch_interval_ms: int = 50
     """批间间隔, env: IS_EXPLAIN_GATE_BATCH_INTERVAL_MS"""
-    # ── Phase 2 修订 #7 LLM 调用退避重试 ──
-    llm_retry_max_attempts: int = 4
-    """LLM 调用退避重试上限, env: IS_LLM_RETRY_MAX_ATTEMPTS"""
-    llm_retry_base_delay_secs: float = 1.0
-    """退避基数 (1s, 4s, 16s, 64s), env: IS_LLM_RETRY_BASE_DELAY_SECS"""
-    llm_retry_log_full_prompt: bool = True
-    """失败时是否写完整 prompt 到 ExtractionFailureLog, env: IS_LLM_RETRY_LOG_FULL_PROMPT"""
 
     # ── equivalence registry LLM 预算 ──
     equivalence_llm_budget_per_batch: int = 20
@@ -384,7 +377,51 @@ class Settings(BaseSettings):
     """单 SQL 执行超时. env: IS_MYSQL_QUERY_TIMEOUT_SECS"""
     mongo_pool_max_size: int = 100  # noqa: hardcode
     """motor maxPoolSize. env: IS_MONGO_POOL_MAX_SIZE"""
-    mongo_connect_timeout_ms: int = 5000  # IS_MONGO_CONNECT_TIMEOUT_MS — 建源/画像探测超时
+    mongo_connect_timeout_ms: int = 5000  # noqa: hardcode — IS_MONGO_CONNECT_TIMEOUT_MS — 建源/画像探测超时
+
+    # ── Oracle Driver Pool ────────────────────────────────
+    # Thin mode (默认): 不需要 Oracle Instant Client, 支持 Oracle 12.1+.
+    # Thick mode: 需要 Oracle Instant Client; 支持 Oracle 11g+.
+    #   - 设置 IS_ORACLE_THICK_MODE_LIB_DIR 为 Instant Client 目录路径启用.
+    #   - 例: /opt/oracle/instantclient_21_1 (Linux) 或 /usr/local/oracle (macOS x86).
+    oracle_thick_mode_lib_dir: str = ""
+    """Oracle Instant Client 目录 (非空则启用 Thick mode). env: IS_ORACLE_THICK_MODE_LIB_DIR"""
+
+    # min=0: 启动时不预建连接, 按需增长; 生产如需预热可改为 1.
+    oracle_pool_min_size: int = 0
+    """oracledb AsyncConnectionPool min. env: IS_ORACLE_POOL_MIN_SIZE"""
+    oracle_pool_max_size: int = 5
+    """oracledb AsyncConnectionPool max. env: IS_ORACLE_POOL_MAX_SIZE"""
+    oracle_pool_increment: int = 1
+    """oracledb AsyncConnectionPool increment. env: IS_ORACLE_POOL_INCREMENT"""
+    oracle_pool_timeout_secs: int = 10
+    """等待连接超时 (pool wait_timeout = × 1000 ms). env: IS_ORACLE_POOL_TIMEOUT_SECS"""
+    oracle_query_timeout_secs: int = 30
+    """单 SQL 执行超时. env: IS_ORACLE_QUERY_TIMEOUT_SECS"""
+    oracle_connect_timeout_secs: int = 10
+    """TCP 握手超时 (tcp_connect_timeout). env: IS_ORACLE_CONNECT_TIMEOUT_SECS"""
+
+    # ── Oracle Driver Pool ────────────────────────────────
+    # Thin mode (默认): 不需要 Oracle Instant Client, 支持 Oracle 12.1+.
+    # Thick mode: 需要 Oracle Instant Client; 支持 Oracle 11g+.
+    #   - 设置 IS_ORACLE_THICK_MODE_LIB_DIR 为 Instant Client 目录路径启用.
+    #   - 例: /opt/oracle/instantclient_21_1 (Linux) 或 /usr/local/oracle (macOS x86).
+    oracle_thick_mode_lib_dir: str = ""
+    """Oracle Instant Client 目录 (非空则启用 Thick mode). env: IS_ORACLE_THICK_MODE_LIB_DIR"""
+
+    # min=0: 启动时不预建连接, 按需增长; 生产如需预热可改为 1.
+    oracle_pool_min_size: int = 0
+    """oracledb AsyncConnectionPool min. env: IS_ORACLE_POOL_MIN_SIZE"""
+    oracle_pool_max_size: int = 5
+    """oracledb AsyncConnectionPool max. env: IS_ORACLE_POOL_MAX_SIZE"""
+    oracle_pool_increment: int = 1
+    """oracledb AsyncConnectionPool increment. env: IS_ORACLE_POOL_INCREMENT"""
+    oracle_pool_timeout_secs: int = 10
+    """等待连接超时 (pool wait_timeout = × 1000 ms). env: IS_ORACLE_POOL_TIMEOUT_SECS"""
+    oracle_query_timeout_secs: int = 30
+    """单 SQL 执行超时. env: IS_ORACLE_QUERY_TIMEOUT_SECS"""
+    oracle_connect_timeout_secs: int = 10
+    """TCP 握手超时 (tcp_connect_timeout). env: IS_ORACLE_CONNECT_TIMEOUT_SECS"""
 
     # ── Langfuse 追踪 ──
     # 方式 1: 自部署 — docker compose -f docker-compose.langfuse.yml up -d
@@ -416,6 +453,23 @@ class Settings(BaseSettings):
     # Fernet 密钥 (urlsafe-base64, 32 字节)。生产必须用 IS_DATASOURCE_ENCRYPTION_KEY
     # 覆盖此 dev 默认值; 轮换密钥需先用旧 key 解密存量再用新 key 重写。
     datasource_encryption_key: str = "pzI3RfOdLDQzT1MK9q2irOGvvJ2XlUo6aIoChL09B0I="
+
+    # ── agentic extractor 配置 (IS_AGENTIC_EXTRACT_*) ──
+    agentic_extract_max_depth: int = 4  # noqa: hardcode
+    """emit 收口嵌套深度上限 (IS_AGENTIC_EXTRACT_MAX_DEPTH)."""
+    agentic_extract_max_iterations: int = 100  # noqa: hardcode
+    """extraction agent 最大轮数 (IS_AGENTIC_EXTRACT_MAX_ITERATIONS).
+
+    两阶段模型: 探索期 ~2000-3000 token/轮, 发射期 ~500-1500 token/轮.
+    content-manage-service 实测 50 轮被截断 (发射中段, knowledge 全丢), 100 覆盖大部分 repo.
+    极端大型仓库的单会话上下文溢出风险 → docs/todos/2026-06-19-agent-loop-context-ceiling.md.
+    """
+    agentic_extract_dead_loop_window: int = 5  # noqa: hardcode
+    """dead_loop 检测窗口大小 (IS_AGENTIC_EXTRACT_DEAD_LOOP_WINDOW)."""
+    agentic_extract_max_grep_pattern_len: int = 200  # noqa: hardcode
+    """ReDoS 守卫 — grep 正则长度上限 (IS_AGENTIC_EXTRACT_MAX_GREP_PATTERN_LEN)."""
+    agentic_enum_scan_timeout: int = 30  # noqa: hardcode
+    """大仓 enum glob 超时秒数 (IS_AGENTIC_ENUM_SCAN_TIMEOUT)."""
 
     @model_validator(mode="after")
     def _validate_error_class_invariants(self) -> "Settings":

@@ -49,20 +49,20 @@ async def _engine() -> AsyncGenerator[AsyncEngine, None]:
 
 @pytest_asyncio.fixture
 async def db_session(_engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
-    """Per-test session with SAVEPOINT rollback — 测试结束后数据全部回滚."""
+    """Per-test session with SAVEPOINT rollback — 测试结束后数据全部回滚.
+
+    使用 SQLAlchemy 2.0 join_transaction_mode="create_savepoint": session 内的
+    commit()/begin_nested() 都映射为 SAVEPOINT, 外层 trans.rollback() 整体回滚。
+    取代旧的手写 after_transaction_end 监听器 (与 begin_nested 嵌套时在新版
+    SQLAlchemy 下抛 "Can't operate on closed transaction")。
+    """
     async with _engine.connect() as conn:
         trans = await conn.begin()
-        await conn.begin_nested()
-
-        session = AsyncSession(bind=conn, expire_on_commit=False)
-
-        @event.listens_for(session.sync_session, "after_transaction_end")
-        def _restart_savepoint(sync_session, transaction):
-            if transaction.nested and not transaction._parent.nested:
-                sync_session.begin_nested()
-
+        session = AsyncSession(
+            bind=conn, expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
         yield session
-
         await session.close()
         await trans.rollback()
 
@@ -235,6 +235,5 @@ class FakeLLM:
 def fake_llm():
     """Patch chat_completion globally with a queue-based fake."""
     fake = FakeLLM()
-    with patch("app.engine.llm.chat_completion", side_effect=fake), \
-         patch("app.knowledge.code_parser.chat_completion", side_effect=fake):
+    with patch("app.engine.llm.chat_completion", side_effect=fake):
         yield fake
