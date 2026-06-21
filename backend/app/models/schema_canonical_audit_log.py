@@ -26,6 +26,7 @@ SchemaAuditAction = Literal[
     "enum_dict_auto_rebind", "enum_dict_value_sync",
     "enum_dict_unbind_cascade", "enum_sync_failed",
     "enum_dict_deleted",
+    "canonical_deleted",
 ]
 
 

@@ -423,6 +423,9 @@ export const schemaCanonicalApi = {
 
   listSchemaAuditLog: (nsId: number, params?: { actions?: string[]; since?: string; until?: string; sco_id?: number; field_path?: string }) =>
     http.get<SchemaAuditLogEntry[]>(`/namespaces/${nsId}/schema-canonical/audit-log`, { params }).then((r) => r.data),
+
+  deleteCanonical: (nsId: number, scoId: number) =>
+    http.delete(`/namespaces/${nsId}/schema-canonical/${scoId}`).then((r) => r.data),
 };
 
 /* ════════════════════════════════════════════

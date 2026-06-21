@@ -45,6 +45,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
   const [selectedSco, setSelectedSco] = useState<SchemaCanonicalObject | null>(null);
   const [loading, setLoading] = useState(false);
   const [dbType, setDbType] = useState<"all" | DbType>("all");
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
 
   // Evidence drawer state
   const [evidenceDrawer, setEvidenceDrawer] = useState<{
@@ -143,6 +144,20 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
     }
   };
 
+  const handleDeleteSco = async () => {
+    if (!selectedSco || !namespaceId) return;
+    try {
+      await schemaCanonicalApi.deleteCanonical(namespaceId, selectedSco.id);
+      message.success("已删除");
+      selectedIdRef.current = null;
+      await load();
+      setRefreshTrigger((n) => n + 1);
+    } catch (e) {
+      console.error("delete canonical failed", e);
+      message.error("删除失败");
+    }
+  };
+
   const handleLockField = async (fieldName: string, locked: boolean) => {
     if (!selectedSco) return;
     try {
@@ -223,6 +238,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
           />
           {selectedSco && (
             <AllFieldsTab
+              key={selectedSco.id}
               sco={selectedSco}
               namespaceId={namespaceId}
               onOpenEvidence={handleOpenEvidence}
@@ -230,6 +246,8 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
               onLockField={handleLockField}
               onSave={handleSave}
               onRefresh={load}
+              onDelete={handleDeleteSco}
+              tableLabel={`[${selectedSco.db_type}] ${selectedSco.database}/${selectedSco.target}`}
             />
           )}
         </Space>
@@ -253,7 +271,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
           <Badge count={counts?.pending_promote ?? 0} style={{ marginLeft: 4 }} />
         </span>
       ),
-      children: <PendingPromoteTab namespaceId={namespaceId} />,
+      children: <PendingPromoteTab namespaceId={namespaceId} key={`pending-${refreshTrigger}`} />,
     },
     {
       key: "evidence",
@@ -263,7 +281,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
           <Badge count={counts?.evidence_only ?? 0} style={{ marginLeft: 4 }} />
         </span>
       ),
-      children: <EvidenceOnlyTab namespaceId={namespaceId} />,
+      children: <EvidenceOnlyTab namespaceId={namespaceId} key={`evidence-${refreshTrigger}`} />,
     },
     {
       key: "conflicts",
@@ -272,7 +290,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
           冲突 <Badge count={counts?.conflicts ?? 0} style={{ marginLeft: 4 }} />
         </span>
       ),
-      children: <ConflictsTab namespaceId={namespaceId} onResolved={refreshCounts} />,
+      children: <ConflictsTab namespaceId={namespaceId} onResolved={refreshCounts} key={`conflicts-${refreshTrigger}`} />,
     },
     {
       key: "audit",
