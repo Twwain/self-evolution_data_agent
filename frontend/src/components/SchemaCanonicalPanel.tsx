@@ -45,6 +45,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
   const [selectedSco, setSelectedSco] = useState<SchemaCanonicalObject | null>(null);
   const [loading, setLoading] = useState(false);
   const [dbType, setDbType] = useState<"all" | DbType>("all");
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
 
   // Evidence drawer state
   const [evidenceDrawer, setEvidenceDrawer] = useState<{
@@ -149,7 +150,8 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
       await schemaCanonicalApi.deleteCanonical(namespaceId, selectedSco.id);
       message.success("已删除");
       selectedIdRef.current = null;
-      void load();
+      await load();
+      setRefreshTrigger((n) => n + 1);
     } catch (e) {
       console.error("delete canonical failed", e);
       message.error("删除失败");
@@ -269,7 +271,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
           <Badge count={counts?.pending_promote ?? 0} style={{ marginLeft: 4 }} />
         </span>
       ),
-      children: <PendingPromoteTab namespaceId={namespaceId} />,
+      children: <PendingPromoteTab namespaceId={namespaceId} key={`pending-${refreshTrigger}`} />,
     },
     {
       key: "evidence",
@@ -279,7 +281,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
           <Badge count={counts?.evidence_only ?? 0} style={{ marginLeft: 4 }} />
         </span>
       ),
-      children: <EvidenceOnlyTab namespaceId={namespaceId} />,
+      children: <EvidenceOnlyTab namespaceId={namespaceId} key={`evidence-${refreshTrigger}`} />,
     },
     {
       key: "conflicts",
@@ -288,7 +290,7 @@ export const SchemaCanonicalPanel: React.FC<Props> = ({ namespaceId }) => {
           冲突 <Badge count={counts?.conflicts ?? 0} style={{ marginLeft: 4 }} />
         </span>
       ),
-      children: <ConflictsTab namespaceId={namespaceId} onResolved={refreshCounts} />,
+      children: <ConflictsTab namespaceId={namespaceId} onResolved={refreshCounts} key={`conflicts-${refreshTrigger}`} />,
     },
     {
       key: "audit",
