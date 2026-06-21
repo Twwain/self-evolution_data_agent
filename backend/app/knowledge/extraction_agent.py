@@ -7,13 +7,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from string import Template
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from app.knowledge.skeleton._base import WorkUnit
 
 from app.config import settings
-from app.engine.llm import chat_completion_with_tools
+from app.engine.llm import THINKING_DISABLED, chat_completion_with_tools
 from app.knowledge.extraction_emit import validate_emit
 from app.knowledge.extraction_prompts import load_prompt_or_fallback
 from app.knowledge.extraction_tools import (
@@ -69,9 +73,77 @@ def _serialize_tool_result(result: dict) -> str:
             + "请用 offset/limit 缩小 read_file / 更精确的 grep 模式 / 更窄的 find_files glob]")
 
 
+def _format_skeleton_context(wu: "WorkUnit") -> str:
+    # ── 字段优先级: Rev 2 字段任一非空 → Rev 2 布局; 全空 → 向后兼容 Rev 1 布局 ──
+    use_rev2 = bool(wu.focus_files or wu.focus_classes or wu.skeleton_class_index)
+
+    if use_rev2:
+        return _format_skeleton_context_rev2(wu)
+    return _format_skeleton_context_rev1(wu)
+
+
+def _format_skeleton_context_rev2(wu: "WorkUnit") -> str:
+    """P3 verbatim — Rev 2 free-exploration layout (PA4-approved, character-locked)."""
+    lines = [""]
+
+    # ── Focus Entities section ──
+    lines.append("## Focus Entities (suggested by pre-scan)")
+    lines.append("Start with these files — they likely define data persistence entities:")
+    for file_path in sorted(wu.focus_files):
+        file_name = os.path.basename(file_path)
+        lines.append(f"- {file_name} → {file_path}")
+
+    lines.append("")
+
+    # ── Repository Index section ──
+    lines.append("## Repository Index (navigation aid)")
+    lines.append("Class→file index from tree-sitter pre-scan. Use for fast lookup:")
+    for class_name, file_path in sorted(wu.skeleton_class_index.items()):
+        lines.append(f"- {class_name} → {file_path}")
+
+    lines.append("")
+
+    # ── Guidance section ──
+    lines.append("## Guidance")
+    lines.append("The Focus Entities list is a suggested starting point. Explore freely:")
+    lines.append(
+        "- Read any file in the repository relevant to data persistence extraction"
+        " — including XML mappers, SQL scripts, ORM configs, and properties files in any directory."
+    )
+    lines.append("- If you discover entities not in the Focus list, extract them too.")
+    lines.append(
+        "- Use the Repository Index for fast file lookup when you know the class name."
+    )
+
+    return "\n".join(lines)
+
+
+def _format_skeleton_context_rev1(wu: "WorkUnit") -> str:
+    """Rev 1 向后兼容布局 — 仅在 Rev 2 三字段全空时命中 (单 agent 降级路径)."""
+    lines = ["", "## Your Assignment", f"Module: {wu.name}",
+             f"Source directory: {wu.scope_dir}",
+             "", "## Entities to investigate (discovered by pre-scan)"]
+    for cls_name, file_path in sorted(wu.class_index_subset.items()):
+        lines.append(f"- {cls_name} → {file_path}")
+    cross = {k: v for k, v in wu.full_class_index.items() if k not in wu.class_index_subset}
+    if cross:
+        lines.append("")
+        lines.append("## Cross-Module Reference Index")
+        lines.append("If you encounter types from other modules, read them at:")
+        for cls_name, file_path in sorted(cross.items()):
+            lines.append(f"- {cls_name} → {file_path}")
+    lines.extend(["", "## Guidance",
+        "You are assigned only the entities above. Read their source files, "
+        "expand fields, extract enums, mark relations. If your assigned entities "
+        "reference types not listed above, read those referenced files too — "
+        "but do not explore unrelated modules outside your assignment."])
+    return "\n".join(lines)
+
+
 async def run_extraction_agent(
     *,
     repo_path: str,
+    skeleton: "WorkUnit | None" = None,
     hint_text: str | None = None,
     max_iterations: int | None = None,
     repo_name: str = "",
@@ -80,6 +152,7 @@ async def run_extraction_agent(
 
     Args:
         repo_path: clone 后的仓库本地路径
+        skeleton: 可选 WorkUnit 注入骨架上下文 (分治模式下指定子任务范围)
         hint_text: 可选 profile hint, 注入 system prompt
         max_iterations: loop 轮数上限, 默认取 IS_AGENTIC_EXTRACT_MAX_ITERATIONS
         repo_name: 仓库名, 日志分组用 (如 question-center-service)
@@ -88,14 +161,25 @@ async def run_extraction_agent(
         max_iterations = settings.agentic_extract_max_iterations
 
     system_prompt = build_extraction_system_prompt(hint_text)
+    if skeleton is not None:
+        system_prompt += _format_skeleton_context(skeleton)
 
-    messages: list[dict] = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": (
+    if skeleton is not None:
+        user_msg = (
+            f"分析仓库 {repo_path} 中的数据持久化定义。上面的 [Focus Entities]\n"
+            "是建议起点 — 可以自由探索仓库内任何相关文件，包括各目录下的\n"
+            "XML mapper、SQL 脚本、ORM 配置。读源码→展开字段→提取枚举→\n"
+            "标记关联→emit。用 [Repository Index] 快速定位已知类名。"
+        )
+    else:
+        user_msg = (
             f"分析仓库 {repo_path} 中的所有数据持久化定义。"
             "按探索原则自主发现实体、递归展开字段、提取枚举、标记关联关系。"
             "完成后调用 emit_schema_object 提交每个对象。"
-        )},
+        )
+    messages: list[dict] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_msg},
     ]
 
     emitted: list[dict] = []
@@ -126,9 +210,12 @@ async def run_extraction_agent(
 
     tool_fns: dict[str, Callable] = {
         "list_dir": lambda **kw: list_dir(kw.get("path", "."), repo_path),
-        "read_file": lambda **kw: read_file(kw["path"], repo_path, kw.get("offset"), kw.get("limit")),
-        "grep": lambda **kw: grep(kw["pattern"], kw.get("path", "."), repo_path, kw.get("recursive", True)),
-        "find_files": lambda **kw: find_files(kw["glob"], repo_path),  # root server-injected, LLM 只传 glob
+        "read_file": lambda **kw: read_file(
+            kw["path"], repo_path, kw.get("offset"), kw.get("limit")),
+        "grep": lambda **kw: grep(
+            kw["pattern"], kw.get("path", "."), repo_path, kw.get("recursive", True)),
+        # root server-injected, LLM 只传 glob
+        "find_files": lambda **kw: find_files(kw["glob"], repo_path),
         "emit_schema_object": _make_emit_handler(emitted),
         "emit_knowledge": _emit_knowledge_handler,
     }
@@ -146,6 +233,7 @@ async def run_extraction_agent(
             response = await chat_completion_with_tools(
                 messages=messages,
                 tools=EXTRACTION_TOOL_SPECS,
+                extra_body=THINKING_DISABLED,
             )
         except Exception:
             logger.exception("chat_completion_with_tools 调用异常 (iteration=%d)", iteration)
@@ -154,7 +242,8 @@ async def run_extraction_agent(
 
         if not response.tool_calls:
             logger.info(
-                "[%s] agent loop 自然终止  iteration=%-3d  objects=%-3d  knowledge=%-2d  elapsed=%.1fs",
+                "[%s] agent loop 自然终止  iteration=%-3d  objects=%-3d  "
+                "knowledge=%-2d  elapsed=%.1fs",
                 repo_name, iteration, len(emitted), len(knowledge_proposals),
                 time.time() - loop_start,
             )
@@ -165,7 +254,11 @@ async def run_extraction_agent(
         dead_loop_hit = False
         for tc in response.tool_calls:
             fn = tool_fns.get(tc.name)
-            if fn is None:
+            if tc.parse_error:
+                # JSON 解析失败 → 透传原始诊断信号给 LLM, 让其自行判断并调整
+                result = {"status": "error", "error_type": "JSON_PARSE_FAILED",
+                          "message": tc.parse_error}
+            elif fn is None:
                 result = {"status": "error", "error_type": "UNKNOWN_TOOL",
                           "message": f"未知工具: {tc.name}"}
             else:
@@ -194,7 +287,8 @@ async def run_extraction_agent(
         # 逐轮进度日志 — 工具执行后, objects/knowledge 反映本轮真效果
         tool_names = [tc.name for tc in response.tool_calls]
         logger.info(
-            "[%s] agent loop iteration=%-3d  tools=%-40s  objects=%-3d  knowledge=%-2d  elapsed=%.1fs",
+            "[%s] agent loop iteration=%-3d  tools=%-40s  objects=%-3d  "
+            "knowledge=%-2d  elapsed=%.1fs",
             repo_name, iteration, str(tool_names), len(emitted), len(knowledge_proposals),
             time.time() - loop_start,
         )
@@ -228,7 +322,8 @@ async def run_extraction_agent(
     elapsed = time.time() - loop_start
     if llm_failed:
         logger.warning(
-            "[%s] agent loop 异常退出  iterations=%d  objects=%d  knowledge=%d  elapsed=%.1fs  reason=llm_call_failed",
+            "[%s] agent loop 异常退出  iterations=%d  objects=%d  "
+            "knowledge=%d  elapsed=%.1fs  reason=llm_call_failed",
             repo_name, iteration, len(emitted), len(knowledge_proposals), elapsed,
         )
         return ExtractionResult(

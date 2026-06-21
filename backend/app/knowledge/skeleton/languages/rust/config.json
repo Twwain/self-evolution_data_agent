@@ -1,0 +1,1 @@
+{"name":"rust","extensions":[".rs"],"tree_sitter_lang":"rust","entity_node_types":["struct_item","enum_item"]}

@@ -14,7 +14,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.metadata import async_session
 from app.knowledge.evaluator import evaluate_parse_quality
-from app.knowledge.extraction_agent import run_extraction_agent
+
 from app.knowledge.git_manager import clone_or_update
 from app.knowledge.parse_result import CodeParseResult, ParseReport, ParserStats
 from app.knowledge.schema_builder import (
@@ -205,6 +205,7 @@ async def _run_enum_safety_net(local_path: str, ns_id: int, name: str) -> None:
     from pathlib import Path as _Path
 
     _t0 = time.monotonic()
+    log.info("[%s] enum 安全网开始, glob 扫描 Java 文件...", name)
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _exec:
             _ft = _exec.submit(_glob.glob, f"{local_path}/**/*.java", recursive=True)
@@ -218,12 +219,15 @@ async def _run_enum_safety_net(local_path: str, ns_id: int, name: str) -> None:
 
     enum_files = [f for f in java_files if "enum" in _Path(f).name.lower()]
     if not enum_files:
+        log.info("[%s] enum 安全网: 未发现候选 enum 文件, 跳过", name)
         return
+
+    log.info("[%s] enum 安全网发现 %d 候选 enum 文件, 开始 LLM 解析...", name, len(enum_files))
 
     from app.knowledge.enum_dictionary_writer import upsert_enum_dictionary_from_code
     from app.knowledge.enum_extractor import parse_enum_classes_batch
 
-    enum_defs, _ = parse_enum_classes_batch(enum_files)
+    enum_defs, _ = await parse_enum_classes_batch(enum_files, repo_name=name)
     if not enum_defs:
         return
     async with async_session() as enum_db:
@@ -384,7 +388,8 @@ async def run_training_pipeline_with_progress(
     await on_progress(12, "LLM Agent 探索代码...")
     t_parse = time.time()
     hint_text = await _load_profile_hint(repo_id)
-    result = await run_extraction_agent(repo_path=local_path, hint_text=hint_text, repo_name=name)
+    from app.knowledge.skeleton.orchestrator import orchestrated_extraction
+    result = await orchestrated_extraction(repo_path=local_path, hint_text=hint_text, repo_name=name)
 
     # ── Step 3a: agent 状态守卫 ──
     if result.status == "failed":
@@ -412,6 +417,18 @@ async def run_training_pipeline_with_progress(
         log.warning("[%s] extraction agent partial: %s (objects=%d)",
                     name, result.reason, len(result.objects))
         await on_progress(38, f"提取部分完成: {result.reason} — {len(result.objects)} objects")
+        # Persist partial reason — crashed subagent diagnostics must survive for audit
+        async with async_session() as audit_db:
+            from app.knowledge.explain_gate import write_extraction_failure
+            await write_extraction_failure(
+                audit_db,
+                namespace_id=ns_id,
+                repo_id=repo_id,
+                extraction_kind="agentic_extraction",
+                failure_type="partial_extraction",
+                failure_message=result.reason or "partial extraction",
+            )
+            await audit_db.commit()
 
     report.stats = _stats_from_agent(result.objects)
     log.info(

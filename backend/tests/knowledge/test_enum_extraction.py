@@ -93,7 +93,8 @@ class TestParseEnumClassesBatch:
         f.write_text(content)
         return str(f)
 
-    def test_extracts_values(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_extracts_values(self, tmp_path):
         """正常 LLM 响应 → 正确提取 enum_classes 和 index"""
         enum_file = self._make_enum_file(
             tmp_path, "OrderStatus.java",
@@ -110,13 +111,14 @@ class TestParseEnumClassesBatch:
         })
 
         with patch("app.knowledge.enum_extractor.chat_completion", return_value=llm_response):
-            enum_classes, index = _parse_enum_classes_batch([enum_file])
+            enum_classes, index = await _parse_enum_classes_batch([enum_file])
 
         assert len(enum_classes) == 1
         assert enum_classes[0].enum_class == "OrderStatus"
         assert len(enum_classes[0].values) == 2
 
-    def test_dual_key_index(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_dual_key_index(self, tmp_path):
         """enum_class_index 同时用 simple_name 和 fqn 索引"""
         enum_file = self._make_enum_file(
             tmp_path, "PayType.java",
@@ -132,14 +134,15 @@ class TestParseEnumClassesBatch:
         })
 
         with patch("app.knowledge.enum_extractor.chat_completion", return_value=llm_response):
-            _, index = _parse_enum_classes_batch([enum_file])
+            _, index = await _parse_enum_classes_batch([enum_file])
 
         # 双索引都能命中
         assert "PayType" in index
         assert "com.shop.PayType" in index
         assert index["PayType"] is index["com.shop.PayType"]
 
-    def test_handles_llm_error_gracefully(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_handles_llm_error_gracefully(self, tmp_path):
         """LLM 返回非法 JSON → 跳过, 不抛异常"""
         enum_file = self._make_enum_file(
             tmp_path, "Bad.java",
@@ -147,12 +150,13 @@ class TestParseEnumClassesBatch:
         )
 
         with patch("app.knowledge.enum_extractor.chat_completion", return_value="not json at all"):
-            enum_classes, index = _parse_enum_classes_batch([enum_file])
+            enum_classes, index = await _parse_enum_classes_batch([enum_file])
 
         assert enum_classes == []
         assert index == {}
 
-    def test_handles_llm_exception(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_handles_llm_exception(self, tmp_path):
         """LLM 调用抛异常 → 跳过, 不中断其他文件"""
         good_file = self._make_enum_file(
             tmp_path, "Good.java",
@@ -176,12 +180,13 @@ class TestParseEnumClassesBatch:
             })
 
         with patch("app.knowledge.enum_extractor.chat_completion", side_effect=mock_llm):
-            enum_classes, index = _parse_enum_classes_batch([bad_file, good_file])
+            enum_classes, index = await _parse_enum_classes_batch([bad_file, good_file])
 
         assert len(enum_classes) == 1
         assert enum_classes[0].enum_class == "Good"
 
-    def test_skips_empty_values(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_skips_empty_values(self, tmp_path):
         """LLM 返回 values 为空数组 → 跳过"""
         enum_file = self._make_enum_file(
             tmp_path, "Empty.java",
@@ -194,7 +199,7 @@ class TestParseEnumClassesBatch:
         })
 
         with patch("app.knowledge.enum_extractor.chat_completion", return_value=llm_response):
-            enum_classes, index = _parse_enum_classes_batch([enum_file])
+            enum_classes, index = await _parse_enum_classes_batch([enum_file])
 
         assert enum_classes == []
         assert index == {}

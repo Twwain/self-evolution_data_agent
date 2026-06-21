@@ -1,0 +1,14 @@
+{
+  "description": "Ground-truth entity list for agentic_golden fixture — canonical reference for recall tests",
+  "entities": ["Order", "Customer", "Address", "OrderStatus"],
+  "entity_files": [
+    "src/main/java/com/example/Order.java",
+    "src/main/java/com/example/Customer.java",
+    "src/main/java/com/example/Address.java",
+    "src/main/java/com/example/OrderStatus.java"
+  ],
+  "non_entity_files": [
+    "src/main/java/com/example/OrderRepository.java"
+  ],
+  "note": "OrderRepository.java is a JPA repository interface (Spring Data pattern) — excluded from entities. It should NOT appear in Explorer focus_files."
+}

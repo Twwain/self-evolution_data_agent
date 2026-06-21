@@ -383,7 +383,7 @@ async def run_agent_loop(
                          trace_id, iteration, tc.name,
                          _summarize(tc.input, limit=500))
             results = await asyncio.gather(
-                *[_exec_tool(tc, tools_registry, sem) for tc in response.tool_calls],
+                *[_exec_or_reject(tc, tools_registry, sem) for tc in response.tool_calls],
                 return_exceptions=False,
             )
             for tc, res in zip(response.tool_calls, results):
@@ -805,6 +805,17 @@ async def _resolve_caps_for_error(
     except Exception as e:  # noqa: BLE001 — caps 仅用于丰富文案, 失败不阻断澄清
         logger.warning("_resolve_caps_for_error 失败 fired_class=%s: %s", fired_class, e)
         return None
+
+
+async def _exec_or_reject(
+    tc: ToolCall,
+    registry: dict[str, ToolFn],
+    sem: asyncio.Semaphore,
+) -> dict:
+    """JSON 解析失败时短路 — 不执行工具, 直接返回诊断信号给 LLM."""
+    if tc.parse_error:
+        return {"status": "error", "error_type": "JSON_PARSE_FAILED", "message": tc.parse_error}
+    return await _exec_tool(tc, registry, sem)
 
 
 async def _exec_tool(

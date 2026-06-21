@@ -1,0 +1,1 @@
+{"name":"kotlin","extensions":[".kt",".kts"],"tree_sitter_lang":"kotlin","entity_node_types":["class_declaration","enum_declaration"]}

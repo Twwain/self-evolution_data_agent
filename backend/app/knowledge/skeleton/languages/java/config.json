@@ -1,0 +1,1 @@
+{"name":"java","extensions":[".java"],"tree_sitter_lang":"java","entity_node_types":["class_declaration","enum_declaration"]}

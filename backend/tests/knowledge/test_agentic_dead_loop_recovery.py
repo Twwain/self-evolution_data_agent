@@ -14,6 +14,7 @@ class _MockToolCall:
     id: str
     name: str
     input: dict
+    parse_error: str | None = None
 
 
 @dataclass

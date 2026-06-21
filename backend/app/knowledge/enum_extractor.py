@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from app.engine.json_parser import parse_llm_json
-from app.engine.llm import chat_completion
+from app.engine.llm import THINKING_DISABLED, chat_completion
 
 logger = logging.getLogger(__name__)
 
@@ -92,64 +93,103 @@ _ENUM_EXTRACTION_SYSTEM_PROMPT = """\
 _MAX_FILE_CHARS = 16000  # noqa: hardcode
 
 
-def parse_enum_classes_batch(
+async def parse_enum_classes_batch(
     enum_files: list[str],
     *,
     db=None,
     namespace_id: int | None = None,
     repo_id: int | None = None,
+    repo_name: str = "",
+    concurrency: int = 4,
 ) -> tuple[list[EnumDef], dict[str, EnumDef]]:
-    """逐个 enum 文件调 LLM 提取枚举定义.
+    """逐个 enum 文件调 LLM 提取枚举定义 (async, Semaphore 限流并发).
 
     返回 (enum_defs, enum_class_index)
     - enum_defs: 所有成功解析的 EnumDef
     - enum_class_index: 双索引 (simple_name + fqn → EnumDef)
+
+    concurrency: 并发 LLM 调用数上限 (默认 4, 与 IS_AGENTIC_EXTRACT_SUBAGENT_CONCURRENCY 对齐).
     """
+    total = len(enum_files)
+    prefix = f"[{repo_name}] " if repo_name else ""
+    logger.info("%senum LLM 解析开始, 共 %d 个候选文件 (并发度=%d)", prefix, total, concurrency)
+
     enum_defs: list[EnumDef] = []
     enum_class_index: dict[str, EnumDef] = {}
+    sem = asyncio.Semaphore(concurrency)
+    completed: int = 0
+    lock = asyncio.Lock()
 
-    for path in enum_files:
-        try:
-            content = Path(path).read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            logger.warning("enum 文件读取失败: %s", path)
-            continue
+    async def _process_one(path: str) -> EnumDef | None:
+        nonlocal completed
+        async with sem:
+            try:
+                content = Path(path).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                async with lock:
+                    completed += 1
+                logger.warning("%senum 文件读取失败: %s", prefix, path)
+                return None
 
-        if len(content) > _MAX_FILE_CHARS:
-            content = content[:_MAX_FILE_CHARS] + "\n// ... 文件已截断"
+            if len(content) > _MAX_FILE_CHARS:
+                content = content[:_MAX_FILE_CHARS] + "\n// ... 文件已截断"
 
-        messages = [
-            {"role": "system", "content": _ENUM_EXTRACTION_SYSTEM_PROMPT},
-            {"role": "user", "content": content},
-        ]
-        try:
-            raw = chat_completion(messages=messages, temperature=0.1, max_tokens=4096)
+            messages = [
+                {"role": "system", "content": _ENUM_EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user", "content": content},
+            ]
+            try:
+                raw = await asyncio.to_thread(
+                    chat_completion, messages=messages, temperature=0.1, max_tokens=4096,
+                    extra_body=THINKING_DISABLED,
+                )
+            except Exception as e:
+                async with lock:
+                    completed += 1
+                logger.warning("%senum LLM 调用异常, 跳过 %s: %s", prefix, path, e)
+                return None
+
             data = _safe_parse_json(raw)
             if not data:
-                logger.warning("enum LLM 输出 JSON 解析失败, 跳过: %s", path)
-                continue
+                async with lock:
+                    completed += 1
+                logger.warning("%senum LLM 输出 JSON 解析失败, 跳过: %s", prefix, path)
+                return None
 
             values = data.get("values")
             if not values or not isinstance(values, list):
-                logger.warning("enum values 为空或非数组, 跳过: %s", path)
-                continue
+                async with lock:
+                    completed += 1
+                logger.warning("%senum values 为空或非数组, 跳过: %s", prefix, path)
+                return None
 
             if not all(v.get("name") for v in values):
-                logger.warning("enum value.name 为空, 跳过: %s", path)
-                continue
+                async with lock:
+                    completed += 1
+                logger.warning("%senum value.name 为空, 跳过: %s", prefix, path)
+                return None
 
-            enum_def = _to_enum_def(data)
-            enum_defs.append(enum_def)
+            async with lock:
+                completed += 1
+                if completed % 10 == 0 or completed == total:
+                    logger.info("%senum LLM 解析进度: %d/%d", prefix, completed, total)
 
-            if enum_def.enum_class:
-                enum_class_index[enum_def.enum_class] = enum_def
-            if enum_def.fully_qualified_name:
-                enum_class_index[enum_def.fully_qualified_name] = enum_def
+            return _to_enum_def(data)
 
-        except Exception as e:
-            logger.warning("enum LLM 解析异常, 跳过 %s: %s", path, e)
-            continue
+    tasks = [_process_one(f) for f in enum_files]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
+    for r in results:
+        if isinstance(r, EnumDef):
+            enum_defs.append(r)
+            if r.enum_class:
+                enum_class_index[r.enum_class] = r
+            if r.fully_qualified_name:
+                enum_class_index[r.fully_qualified_name] = r
+        elif isinstance(r, Exception):
+            logger.warning("%senum LLM 解析异常 (gather): %s", prefix, r)
+
+    logger.info("%senum LLM 解析完成: %d/%d 成功", prefix, len(enum_defs), total)
     return enum_defs, enum_class_index
 
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
+from unittest.mock import AsyncMock, patch
 
 from app.knowledge import trainer as trainer_module
 from app.knowledge.extraction_agent import ExtractionResult
@@ -44,13 +45,8 @@ def _stub_heavy_pipeline_stages(monkeypatch: pytest.MonkeyPatch) -> None:
         return report
 
     monkeypatch.setattr(trainer_module, "clone_or_update", _fake_clone_or_update)
-    monkeypatch.setattr(trainer_module, "run_extraction_agent", _fake_run_extraction_agent)
     monkeypatch.setattr(trainer_module, "_build_docs", _fake_build_docs)
     monkeypatch.setattr(trainer_module, "evaluate_parse_quality", _fake_evaluate)
-
-
-async def _fake_run_extraction_agent(*, repo_path, hint_text=None, max_iterations=None):
-    return ExtractionResult(objects=[], status="ok")
 
 
 @pytest_asyncio.fixture
@@ -72,13 +68,16 @@ async def seeded_repo(async_session) -> tuple[int, int, str]:
 
 
 @pytest.mark.asyncio
+@patch("app.knowledge.skeleton.orchestrator.orchestrated_extraction", new_callable=AsyncMock)
 async def test_promote_fires_after_parse_status_and_before_terminology(
+    mock_orch,
     monkeypatch: pytest.MonkeyPatch,
     async_session,
     seeded_repo,
 ):
     """记录关键事件调用序号, 断言: parse_status < promote."""
     ns_id, repo_id, ns_slug = seeded_repo
+    mock_orch.return_value = ExtractionResult(objects=[], status="ok")
 
     monkeypatch.setattr(trainer_module, "async_session", async_session)
     _stub_heavy_pipeline_stages(monkeypatch)
@@ -130,3 +129,5 @@ async def test_promote_fires_after_parse_status_and_before_terminology(
         f"promote 必须在 parse_status='parsed' 之后, 否则 all(parsed) 闸门拿不到当前 repo. "
         f"实测: parse_idx={parse_idx} promote_idx={promote_idx}"
     )
+
+    mock_orch.assert_called_once()

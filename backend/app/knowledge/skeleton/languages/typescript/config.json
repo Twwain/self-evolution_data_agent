@@ -1,0 +1,1 @@
+{"name":"typescript","extensions":[".ts",".tsx"],"tree_sitter_lang":"typescript","entity_node_types":["class_declaration","enum_declaration"]}

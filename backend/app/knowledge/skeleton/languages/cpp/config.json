@@ -1,0 +1,1 @@
+{"name":"cpp","extensions":[".cpp",".cc",".cxx",".hpp",".hh",".hxx"],"tree_sitter_lang":"cpp","entity_node_types":["class_specifier","struct_specifier","enum_specifier"]}

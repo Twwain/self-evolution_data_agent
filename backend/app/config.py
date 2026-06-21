@@ -3,12 +3,18 @@ Self-Evolution Data Agent — 配置中心
 所有环境变量集中管理, 零散读取是架构的癌症
 """
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
 from pydantic import model_validator
 
+# pydantic-settings env_file 相对 CWD 解析 — 固化为 config.py 所在目录的 ../.env
+# (backend/app/config.py → backend/.env), 无论从项目根还是 backend/ 启动行为一致
+_ENV_FILE = str(Path(__file__).resolve().parents[1] / ".env")
+
 
 class Settings(BaseSettings):
-    model_config = {"env_prefix": "IS_", "env_file": ".env"}
+    model_config = {"env_prefix": "IS_", "env_file": _ENV_FILE}
 
     # ── LLM 提供商 (按线协议而非厂商分轴) ──
     #   openai    → OpenAI Chat Completions 协议 (DashScope/Qwen, DeepSeek, vLLM, 官方 OpenAI…)
@@ -470,6 +476,12 @@ class Settings(BaseSettings):
     """ReDoS 守卫 — grep 正则长度上限 (IS_AGENTIC_EXTRACT_MAX_GREP_PATTERN_LEN)."""
     agentic_enum_scan_timeout: int = 30  # noqa: hardcode
     """大仓 enum glob 超时秒数 (IS_AGENTIC_ENUM_SCAN_TIMEOUT)."""
+
+    # ── Agentic Extractor — Skeleton (multi-session divide & conquer) ──
+    agentic_extract_max_work_unit_size: int = 30  # noqa: hardcode
+    """子代理单次最大实体数 (IS_AGENTIC_EXTRACT_MAX_WORK_UNIT_SIZE)."""
+    agentic_extract_subagent_concurrency: int = 4  # noqa: hardcode
+    """并行子代理最大并发 (IS_AGENTIC_EXTRACT_SUBAGENT_CONCURRENCY)."""
 
     @model_validator(mode="after")
     def _validate_error_class_invariants(self) -> "Settings":

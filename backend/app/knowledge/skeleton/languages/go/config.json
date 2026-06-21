@@ -1,0 +1,1 @@
+{"name":"go","extensions":[".go"],"tree_sitter_lang":"go","entity_node_types":["type_spec"]}

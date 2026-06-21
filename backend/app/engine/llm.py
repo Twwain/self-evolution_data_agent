@@ -38,6 +38,9 @@ class EmptyLLMResponseError(RuntimeError):
     """LLM returned empty/null content — retryable transient error."""
     pass
 
+# DeepSeek 思考模式关闭 (仅 openai 路径透传, anthropic 路径忽略 — Claude 思考默认关)
+THINKING_DISABLED: dict = {"thinking": {"type": "disabled"}}
+
 # ── Bedrock proxy tool_use_id 合规校验 ──────────────────────────────────────
 # Bedrock proxy 对 tool_use_id 强制 ^[a-zA-Z0-9_-]+$ 校验;
 # Anthropic 官方 toolu_xxx 本身合规, 某些 proxy 路径会 mangle 前缀致 422.
@@ -429,22 +432,31 @@ def chat_completion_checked(
     temperature: float = 0.1,
     max_tokens: int = 12288,  # noqa: hardcode
     provider: str | None = None,
+    extra_body: dict | None = None,
 ) -> LLMResponse:
-    """同 chat_completion, 但额外返回截断状态 (finish_reason == length/max_tokens)"""
+    """同 chat_completion, 但额外返回截断状态 (finish_reason == length/max_tokens).
+
+    extra_body: 仅 openai 路径透传 (如 DeepSeek 的 {"thinking": {"type": "disabled"}}),
+        anthropic 路径忽略 (Claude 思考默认关闭).
+    """
     provider = provider or settings.llm_provider
 
     if provider == "anthropic":
         return _claude_chat_checked(messages, temperature, max_tokens)
-    return _openai_chat_checked(messages, temperature, max_tokens)
+    return _openai_chat_checked(messages, temperature, max_tokens, extra_body=extra_body)
 
 
-def _openai_chat_checked(messages: list[dict], temperature: float, max_tokens: int) -> LLMResponse:
+def _openai_chat_checked(
+    messages: list[dict], temperature: float, max_tokens: int,
+    extra_body: dict | None = None,
+) -> LLMResponse:
     client = _get_openai_client()
     resp = client.chat.completions.create(
         model=settings.llm_model,
         messages=messages,  # type: ignore[arg-type]
         temperature=temperature,
         max_tokens=max_tokens,
+        extra_body=extra_body,
     )
     truncated = resp.choices[0].finish_reason == "length"
     text = resp.choices[0].message.content or ""
@@ -532,9 +544,10 @@ def _claude_chat_checked(messages: list[dict], temperature: float, max_tokens: i
 
 @dataclass
 class ToolCall:
-    id: str           # tool_call_id, 用于结果回喂时与 tool_result 配对
-    name: str         # tool 名
-    input: dict       # tool 参数 (已 JSON 解码)
+    id: str                     # tool_call_id, 用于结果回喂时与 tool_result 配对
+    name: str                   # tool 名
+    input: dict                 # tool 参数 (已 JSON 解码)
+    parse_error: str | None = None  # JSON 解析失败时的诊断信号, 下游据此跳过工具执行
 
 
 @dataclass
@@ -553,6 +566,7 @@ async def chat_completion_with_tools(
     stream_callback: Callable[[dict], Awaitable[None]] | None = None,
     temperature: float = 0.1,
     max_tokens: int = 12288,  # noqa: hardcode
+    extra_body: dict | None = None,
 ) -> ToolUseResponse:
     """统一 tool_use 入口.
 
@@ -563,6 +577,9 @@ async def chat_completion_with_tools(
         - anthropic → Anthropic tool_use block (Claude)
         - openai → OpenAI Chat Completions function calling (DashScope / DeepSeek / vLLM / …)
     stream_callback 在 Stage 5 SSE 接入, 当前轮次完整返回, 不分块推送.
+
+    extra_body: 仅 openai 路径透传 (如 DeepSeek 的 {"thinking": {"type": "disabled"}}),
+        anthropic 路径忽略 (Claude 思考默认关闭).
     """
     provider = provider or settings.llm_provider
     if provider == "anthropic":
@@ -572,6 +589,7 @@ async def chat_completion_with_tools(
     else:
         resp = await asyncio.to_thread(
             _openai_tool_use, messages, tools, temperature, max_tokens,
+            extra_body=extra_body,
         )
     _coerce_tool_call_args(resp.tool_calls, tools)
     return resp
@@ -615,6 +633,7 @@ def _to_openai_messages(messages: list[dict]) -> list[dict]:
 def _openai_tool_use(
     messages: list[dict], tools: list[dict],
     temperature: float, max_tokens: int,
+    extra_body: dict | None = None,
 ) -> ToolUseResponse:
     client = _get_openai_client()
     openai_tools = [
@@ -634,6 +653,7 @@ def _openai_tool_use(
         tools=openai_tools,  # type: ignore[arg-type]
         temperature=temperature,
         max_tokens=max_tokens,
+        extra_body=extra_body,
     )
     choice = resp.choices[0]
     msg = choice.message
@@ -643,9 +663,11 @@ def _openai_tool_use(
         ToolCall(
             id=tc.id,
             name=tc.function.name,
-            input=_safe_json_loads(tc.function.arguments),
+            input=parsed,
+            parse_error=parse_error,
         )
         for tc in raw_calls
+        for parsed, parse_error in [_safe_json_loads(tc.function.arguments)]
     ]
     usage = getattr(resp, "usage", None)
     usage_dict = {
@@ -786,15 +808,31 @@ def _claude_tool_use(
     )
 
 
-def _safe_json_loads(raw: str | None) -> dict:
+def _safe_json_loads(raw: str | None) -> tuple[dict, str | None]:
+    """解析 tool_use arguments JSON.
+
+    Returns:
+        (parsed_dict, error_diagnostic_or_None)
+
+    error_diagnostic 仅包含 JSON 解码错误 + 原始参数诊断片段 (≤ ~400 字符),
+    供下游直接喂给 LLM, 让其自行判断失败原因并调整策略。
+    """
     if not raw:
-        return {}
+        return {}, None
     try:
         parsed = json.loads(raw)
-        return parsed if isinstance(parsed, dict) else {}
-    except json.JSONDecodeError:
+        return (parsed if isinstance(parsed, dict) else {}, None)
+    except json.JSONDecodeError as e:
         logger.warning("OpenAI-compatible tool arguments not valid JSON: %r", raw[:200])
-        return {}
+        threshold = 280
+        if len(raw) > threshold:
+            snippet = (
+                f"↓ 参数头部 (前 200 字符):\n{raw[:200]}\n"
+                f"↓ 参数尾部 (后 80 字符):\n{raw[-80:]}"
+            )
+        else:
+            snippet = f"↓ 完整参数:\n{raw}"
+        return {}, f"工具参数 JSON 解析失败: {e}\n{snippet}"
 
 
 def _coerce_tool_call_args(tool_calls: list[ToolCall], tools: list[dict]) -> None:

@@ -1,0 +1,1 @@
+{"name":"csharp","extensions":[".cs"],"tree_sitter_lang":"c_sharp","entity_node_types":["class_declaration","enum_declaration","struct_declaration"]}
