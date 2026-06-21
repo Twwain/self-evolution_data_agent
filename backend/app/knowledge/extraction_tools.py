@@ -347,7 +347,6 @@ EXTRACTION_TOOL_SPECS: list[dict[str, Any]] = [
                          "required": ["term", "primary_collection"],
                          "properties": {
                              "term": {"type": "string", "description": "业务术语 (实体类型/业务对象, ≤30字, 如 '订单' '商品')"},
-                             "definition": {"type": "string", "description": "术语含义 (1-2句)"},
                              "primary_collection": {"type": "string", "description": "术语对应的真实表名/集合名 (数据库中的实际名称)"},
                              "synonyms": {"type": "array", "items": {"type": "string"}, "description": "同义词列表 (可选)"},
                          }},
@@ -368,3 +367,45 @@ EXTRACTION_TOOL_SPECS: list[dict[str, Any]] = [
         }
     }
 ]
+
+# ── Enum extraction agent tool spec ──────────────────────
+# 独立于 EXTRACTION_TOOL_SPECS — schema 提取 agent 不应看到此工具.
+EMIT_ENUM_DEFINITION_SPEC: dict[str, Any] = {
+    "name": "emit_enum_definition",
+    "description": (
+        "提交一个枚举/常量类的完整定义。"
+        "Use when: 已 read_file 完整提取了所有枚举值 (name + db_value + description)。"
+        "Do not use when: 仅发现枚举名但未读源码 / 枚举值未完整提取。"
+        "Input: enum_class=类名, fully_qualified_name=全限定名(可选), "
+        "values=[{name, db_value, description}], source_file=定义文件路径。"
+        "db_value 为 int 或 string 的数据库存储值。"
+        "Output: {status: ok|error, message}"
+    ),
+    "input_schema": {
+        "type": "object",
+        "required": ["enum_class", "values"],
+        "properties": {
+            "enum_class": {
+                "type": "string",
+                "description": "枚举类名 (如 OrderStatus)",
+            },
+            "fully_qualified_name": {
+                "type": "string",
+                "description": "全限定名 (如 com.example.enums.OrderStatus)",
+            },
+            "values": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["name", "db_value"],
+                    "properties": {
+                        "name": {"type": "string"},
+                        "db_value": {"description": "int 或 string 数据库存储值"},
+                        "description": {"type": "string"},
+                    },
+                },
+            },
+            "source_file": {"type": "string", "description": "定义所在的源文件路径"},
+        },
+    },
+}

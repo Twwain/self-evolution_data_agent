@@ -14,7 +14,6 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.metadata import async_session
 from app.knowledge.evaluator import evaluate_parse_quality
-
 from app.knowledge.git_manager import clone_or_update
 from app.knowledge.parse_result import CodeParseResult, ParseReport, ParserStats
 from app.knowledge.schema_builder import (
@@ -194,48 +193,204 @@ async def _build_coll_to_db(ns_id: int, name: str) -> dict[str, str]:
     return coll_to_db
 
 
+# ── enum agent system prompt (语言无关) ──────────────────
+
+_ENUM_AGENT_SYSTEM_PROMPT = """\
+<role>你是代码枚举/常量定义提取专家</role>
+<goal>从仓库源码中提取所有枚举/常量类的完整定义。db_value 是数据库中实际存储的值 — 通过构造参数类型、getter 方法名、查找方法 (如 getByCode/getByValue) 和注释综合推断, 不要依赖固定的参数位置规则。</goal>
+
+<output>
+每个枚举通过 emit_enum_definition 提交:
+- enum_class: 枚举类名
+- fully_qualified_name: 全限定名 (可选)
+- values: [{name: 枚举常量名, db_value: int|string 数据库存储值, description: 语义描述或 null}]
+- source_file: 定义文件路径
+</output>
+
+<examples>
+Java 构造参数:
+  public enum OrderStatus { CREATED(1, "已创建"), PAID(2, "已支付"); }
+  → emit_enum_definition(enum_class="OrderStatus", values=[{name:"CREATED", db_value:1, description:"已创建"}, {name:"PAID", db_value:2, description:"已支付"}])
+
+Python StrEnum:
+  class SourceStatus(str, Enum): MANUAL=("manual", "手动输入"); AUTO=("auto", "自动生成")
+  → emit_enum_definition(enum_class="SourceStatus", values=[{name:"MANUAL", db_value:"manual", description:"手动输入"}, {name:"AUTO", db_value:"auto", description:"自动生成"}])
+
+TypeScript number enum:
+  enum Status { Active = 1, Inactive = 0 }
+  → emit_enum_definition(enum_class="Status", values=[{name:"Active", db_value:1, description:null}, {name:"Inactive", db_value:0, description:null}])
+</examples>
+
+<escape>未发现枚举 → 如实报告, 不编造。</escape>"""
+
+
 async def _run_enum_safety_net(local_path: str, ns_id: int, name: str) -> None:
-    """枚举确定性安全网 (D5/§6.3) — agent 漏标枚举时 Java glob 兜底.
+    """枚举提取 agent — 语言无关探索 + emit_enum_definition 收口落地 EnumDictionary.
 
-    仅 glob **/*.java (Java-only, 见 spec §6.3 F6); 文件名含 'enum' 的才确定性解析,
-    glob 超时 → 跳过。agent 主路径已语言无关地提取枚举内联到字段 enum_values。
+    用 agent loop (4 读工具 + emit_enum_definition) 替代旧 Java glob + per-file LLM,
+    支持多语言枚举提取。写路径 (EnumDictionary upsert) 保持不变。
     """
-    import concurrent.futures
-    import glob as _glob
-    from pathlib import Path as _Path
-
     _t0 = time.monotonic()
-    log.info("[%s] enum 安全网开始, glob 扫描 Java 文件...", name)
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _exec:
-            _ft = _exec.submit(_glob.glob, f"{local_path}/**/*.java", recursive=True)
-            java_files = _ft.result(timeout=settings.agentic_enum_scan_timeout)
-    except concurrent.futures.TimeoutError:
-        log.warning("[%s] Enum scan glob 超时 (%ds), 跳过", name, settings.agentic_enum_scan_timeout)
-        return
-    _elapsed = time.monotonic() - _t0
-    if _elapsed > 5:
-        log.info("[%s] Enum glob 耗时 %.1fs, 匹配 %d 文件", name, _elapsed, len(java_files))
+    log.info("[%s] enum agent 开始...", name)
+    import json as _json
 
-    enum_files = [f for f in java_files if "enum" in _Path(f).name.lower()]
-    if not enum_files:
-        log.info("[%s] enum 安全网: 未发现候选 enum 文件, 跳过", name)
-        return
-
-    log.info("[%s] enum 安全网发现 %d 候选 enum 文件, 开始 LLM 解析...", name, len(enum_files))
-
+    from app.engine.llm import THINKING_DISABLED, chat_completion_with_tools
     from app.knowledge.enum_dictionary_writer import upsert_enum_dictionary_from_code
-    from app.knowledge.enum_extractor import parse_enum_classes_batch
+    from app.knowledge.enum_extractor import EnumDef, EnumValue
+    from app.knowledge.extraction_tools import (
+        EMIT_ENUM_DEFINITION_SPEC,
+        EXTRACTION_TOOL_SPECS,
+        find_files,
+        grep,
+        list_dir,
+        read_file,
+    )
 
-    enum_defs, _ = await parse_enum_classes_batch(enum_files, repo_name=name)
-    if not enum_defs:
-        return
-    async with async_session() as enum_db:
-        for enum_def in enum_defs:
-            if enum_def.enum_class:
-                await upsert_enum_dictionary_from_code(enum_db, ns_id, enum_def)
-        await enum_db.commit()
-    log.info("[%s] enum 安全网: %d 个 enum 类落 EnumDictionary", name, len(enum_defs))
+    # ── tool specs: 4 read tools + emit_enum_definition ──
+    tool_specs = EXTRACTION_TOOL_SPECS[:4] + [EMIT_ENUM_DEFINITION_SPEC]
+
+    # ── tool functions (sandbox to local_path) ──
+    emitted: list[dict] = []
+
+    def _emit_handler(**data: object) -> dict:
+        enum_class = str(data.get("enum_class", "")) if data.get("enum_class") else ""
+        values = data.get("values")
+        if not enum_class:
+            return {"status": "error", "message": "enum_class 缺失"}
+        if not values or not isinstance(values, list):
+            return {"status": "error", "message": "values 非空数组"}
+        if not all(isinstance(v, dict) and v.get("name") for v in values):
+            return {"status": "error", "message": "values[].name 缺失"}
+        emitted.append(dict(data))
+        return {"status": "ok", "message": f"已提交: {enum_class}"}
+
+    tool_fns: dict[str, Callable] = {
+        "list_dir": lambda **kw: list_dir(str(kw.get("path", ".")), local_path),
+        "read_file": lambda **kw: read_file(
+            str(kw["path"]), local_path,
+            kw.get("offset"), kw.get("limit"),
+        ),
+        "grep": lambda **kw: grep(
+            str(kw["pattern"]), str(kw.get("path", ".")), local_path,
+            bool(kw.get("recursive", True)),
+        ),
+        "find_files": lambda **kw: find_files(str(kw["glob"]), local_path),
+        "emit_enum_definition": _emit_handler,
+    }
+
+    # ── agent loop ──
+    dw = settings.agentic_extract_dead_loop_window
+    max_iter = settings.agentic_extract_max_iterations
+    recent: list[tuple[str, str, str]] = []
+    iteration = 0
+
+    messages: list[dict] = [
+        {"role": "system", "content": _ENUM_AGENT_SYSTEM_PROMPT},
+        {"role": "user", "content": (
+            f"提取仓库 {local_path} 中所有枚举/常量类定义, "
+            "逐个 emit_enum_definition 提交。"
+        )},
+    ]
+
+    while iteration < max_iter:
+        iteration += 1
+        try:
+            response = await chat_completion_with_tools(
+                messages=messages, tools=tool_specs, extra_body=THINKING_DISABLED,
+            )
+        except Exception:
+            log.exception("[%s] enum agent LLM 调用失败 (iteration=%d)", name, iteration)
+            break
+
+        if not response.tool_calls:
+            break
+
+        tool_results: list[tuple[Any, dict]] = []
+        dead_loop_hit = False
+        for tc in response.tool_calls:
+            fn = tool_fns.get(tc.name)
+            if fn is None:
+                result: dict = {"status": "error", "error_type": "UNKNOWN_TOOL",
+                                "message": f"未知工具: {tc.name}"}
+            else:
+                try:
+                    result = fn(**tc.input)  # type: ignore[operator]
+                except Exception as e:
+                    result = {"status": "error", "error_type": type(e).__name__,
+                              "message": str(e)}
+
+            tc_sig = (
+                tc.name,
+                _json.dumps(tc.input, sort_keys=True, default=str),
+                result.get("error_type", "") if result.get("status") == "error" else "ok",
+            )
+            recent.append(tc_sig)
+            if len(recent) > dw:
+                recent.pop(0)
+            if len(recent) >= dw and \
+               all(item == recent[-1] for item in recent[-dw:]):
+                dead_loop_hit = True
+                tool_results.append((tc, result))
+                break
+            tool_results.append((tc, result))
+
+        tool_names = [tc.name for tc in response.tool_calls]
+        log.info(
+            "[%s] enum agent  iteration=%-3d  tools=%-40s  enums=%-3d",
+            name, iteration, str(tool_names), len(emitted),
+        )
+
+        processed_tcs = [tc for tc, _ in tool_results]
+        messages.append({
+            "role": "assistant",
+            "content": response.text or "",
+            "tool_calls": [
+                {"id": tc.id, "name": tc.name, "input": tc.input}
+                for tc in processed_tcs
+            ],
+        })
+
+        def _serialize(r: dict) -> str:
+            raw = _json.dumps(r, ensure_ascii=False, default=str)
+            return raw if len(raw) <= settings.agent_tool_result_max_chars else \
+                raw[:settings.agent_tool_result_max_chars] + "\n\n[输出截断]"
+
+        for tc, result in tool_results:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": _serialize(result),
+            })
+
+        if dead_loop_hit:
+            log.warning("[%s] enum agent dead_loop, 保留 %d 条已提取", name, len(emitted))
+            break
+
+    # ── write to EnumDictionary (写路径不变) ──
+    t_elapsed = time.monotonic() - _t0
+    if emitted:
+        async with async_session() as enum_db:
+            for data in emitted:
+                enum_def = EnumDef(
+                    enum_class=str(data.get("enum_class", "")),
+                    fully_qualified_name=str(data.get("fully_qualified_name", "")),
+                    values=[
+                        EnumValue(
+                            name=str(v.get("name", "")),
+                            db_value=v.get("db_value", v.get("name", "")),
+                            description=v.get("description"),
+                        )
+                        for v in (data.get("values") or [])
+                        if isinstance(v, dict)
+                    ],
+                )
+                if enum_def.enum_class:
+                    await upsert_enum_dictionary_from_code(enum_db, ns_id, enum_def)
+            await enum_db.commit()
+        log.info("[%s] enum agent: %d 个枚举类落 EnumDictionary  elapsed=%.1fs",
+                 name, len(emitted), t_elapsed)
+    else:
+        log.info("[%s] enum agent: 未发现枚举  elapsed=%.1fs", name, t_elapsed)
 
 
 def _sync_trace_id_to_log() -> None:
