@@ -90,18 +90,19 @@ export default function AuditQueue({
         />
         <Select placeholder="类型" allowClear value={entryType} onChange={setEntryType}
           options={[
-            { label: "术语", value: "terminology" },
+            { label: "业务术语", value: "terminology" },
             { label: "实例别名", value: "instance_alias" },
-            { label: "示例", value: "example" },
-            { label: "规则", value: "rule" },
-            { label: "路由", value: "route_hint" },
+            { label: "示例查询", value: "example" },
+            { label: "查询规则", value: "rule" },
+            { label: "路由偏好", value: "route_hint" },
           ]} style={{ width: 120 }} />
         <Select placeholder="来源" allowClear value={source} onChange={setSource}
           options={[
             { label: "Schema 抽取", value: "schema" },
             { label: "手动", value: "manual" },
             { label: "Agent 学习", value: "agent_learn" },
-          ]} style={{ width: 120 }} />
+            { label: "MyBatis 提取", value: "mybatis_extract" },
+          ]} style={{ width: 130 }} />
         {showStatusFilter && !status && (
           <Select placeholder="状态" allowClear value={statusFilter} onChange={setStatusFilter}
             options={STATUS_OPTIONS} style={{ width: 140 }} />
