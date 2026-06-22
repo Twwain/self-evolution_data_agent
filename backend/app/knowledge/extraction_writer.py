@@ -492,9 +492,14 @@ async def _write_business_examples(
             repo_id=repo_id,
             content=f"查询模式: {sql[:120]}",
             payload=json.dumps({
-                "question_pattern": ex.get("question", ""),
-                "sql_pattern": sql,
-                "tables": ex.get("tables", []),
+                "question_pattern": ex.get("question_pattern") or ex.get("question", ""),
+                "collections": [f"{ex.get('database', '')}.{t}" if ex.get('database') else t
+                                for t in ex.get("tables", [])],
+                "join_keys": ex.get("join_keys", []),
+                "final_query_plan": ex.get("final_query_plan"),
+                "result_summary": ex.get("result_summary", ""),
+                "sql_pattern": sql,                          # legacy compat
+                "tables": ex.get("tables", []),              # legacy compat
                 "source_mapper": ex.get("mapper_namespace", ""),
                 "extraction_source": "mybatis_extract",
             }, ensure_ascii=False),

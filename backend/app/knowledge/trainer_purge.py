@@ -37,15 +37,14 @@ OPEN_CONFLICT_STATUS = "open"
 
 
 async def _delete_legacy_kes(db: AsyncSession, repo_id: int) -> list[tuple[int, int | None, str]]:
-    """删 source∈{git, mybatis_extract} ∧ repo_id 的全部 KE — 不分 status (G1).
+    """删 source=mybatis_extract ∧ repo_id 的全部 KE — 不分 status (G1).
 
     Returns: [(entry_id, namespace_id, entry_type), ...] 供 ChromaDB 清理.
 
-    设计契约 (spec 2026-05-21-git-source-full-purge 决策 1):
-        git 是真相源, 从 git 推导的所有知识应随 git 重新推导.
-        mybatis_extract 同理, 从 mybatis XML 推导的 example/route_hint 应随重建清除.
+    设计契约 (spec 2026-05-21 决策 1):
+        mybatis_extract 是从 mybatis XML 推导的 example/route_hint, 应随重建清除.
         canonical 状态由人审标记, 但人审的对象 (上一轮 LLM 产出) 已过时,
-        保留 = 把 git 旧解读冻结成永恒. 推翻旧 "canonical 永不动" 宪章.
+        保留 = 把旧解读冻结成永恒. 推翻旧 "canonical 永不动" 宪章.
     """
     rows = (await db.execute(
         select(
@@ -54,7 +53,7 @@ async def _delete_legacy_kes(db: AsyncSession, repo_id: int) -> list[tuple[int, 
             KnowledgeEntry.entry_type,
         ).where(
             KnowledgeEntry.repo_id == repo_id,
-            KnowledgeEntry.source.in_(["git", "mybatis_extract"]),
+            KnowledgeEntry.source.in_(["mybatis_extract"]),
         )
     )).all()
     if not rows:
@@ -167,7 +166,7 @@ async def purge_legacy_for_full_rebuild(
         preview_ke_ids = (await db.execute(
             select(KnowledgeEntry.id).where(
                 KnowledgeEntry.repo_id == repo_id,
-                KnowledgeEntry.source.in_(["git", "mybatis_extract"]),
+                KnowledgeEntry.source.in_(["mybatis_extract"]),
             )
         )).scalars().all()
         # 按 source 分别计数 (审计可追溯) — 单次 GROUP BY
@@ -177,11 +176,10 @@ async def purge_legacy_for_full_rebuild(
                 func.count(KnowledgeEntry.id),
             ).where(
                 KnowledgeEntry.repo_id == repo_id,
-                KnowledgeEntry.source.in_(["git", "mybatis_extract"]),
+                KnowledgeEntry.source.in_(["mybatis_extract"]),
             ).group_by(KnowledgeEntry.source)
         )).all()
         source_counts: dict[str, int] = {row[0]: row[1] for row in _count_rows}
-        git_ke_count = source_counts.get("git", 0)
         mybatis_ke_count = source_counts.get("mybatis_extract", 0)
         if preview_ke_ids:
             cascade_audit_n = (await db.execute(
@@ -214,7 +212,7 @@ async def purge_legacy_for_full_rebuild(
 
         reason = (
             f"trainer_full_rebuild repo={repo_id} ns={ns_id} "
-            f"ke_deleted={len(deleted_ke_ids)} (git={git_ke_count}, mybatis_extract={mybatis_ke_count}) "
+            f"ke_deleted={len(deleted_ke_ids)} (mybatis_extract={mybatis_ke_count}) "
             f"schema_terminology_deleted={len(schema_term_rows)} "
             f"candidates_deleted={cand_count} "
             f"cascade_audit_deleted={cascade_audit_n} "

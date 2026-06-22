@@ -63,29 +63,36 @@ async def test_already_extracted_true_when_ke_exists(db_session, test_namespace)
 
 
 # ────────────────────────────────────────────────────────────────────────────
-#  _refine_to_example_payload: 校验 ExamplePayload 字段结构
-#  真实字段: question / target_collection / target_database / query_json /
-#            result_summary / source_query_history_id / schema_hash
+#  _refine_to_example_payload: 校验 ExamplePayload 五字段 schema
+#  新字段: question_pattern / collections / join_keys / final_query_plan / result_summary
 # ────────────────────────────────────────────────────────────────────────────
 def test_refine_to_example_payload_structure():
     from scripts.extract_query_examples_from_history import _refine_to_example_payload
 
     raw = '{"collection": "users", "pipeline": [{"$count": "n"}]}'
     llm_response = json.dumps({
-        "question": "total users?",
-        "target_collection": "users",
-        "target_database": None,
-        "query_json": {"collection": "users", "pipeline": [{"$count": "n"}]},
-        "result_summary": "1 row",
-        "source_query_history_id": None,
-        "schema_hash": None,
+        "question_pattern": "统计用户总数",
+        "collections": ["shop.users"],
+        "join_keys": [],
+        "final_query_plan": {
+            "steps": [{
+                "db_type": "mongodb",
+                "database": "shop",
+                "collection": "users",
+                "operation": "aggregate",
+                "query": {"pipeline": [{"$count": "n"}]},
+            }],
+        },
+        "result_summary": "在 users 上 $count 统计总数",
     })
     with patch("scripts.extract_query_examples_from_history.chat_completion", return_value=llm_response):
         payload = _refine_to_example_payload("total users?", raw)
 
-    assert payload.question == "total users?"
-    assert payload.target_collection == "users"
-    assert payload.result_summary == "1 row"
+    assert payload.question_pattern == "统计用户总数"
+    assert payload.collections == ["shop.users"]
+    assert payload.join_keys == []
+    assert payload.final_query_plan is not None
+    assert payload.result_summary == "在 users 上 $count 统计总数"
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -105,13 +112,19 @@ async def test_run_extraction_dry_run_writes_nothing(db_session, test_namespace)
     await db_session.commit()
 
     llm_resp = json.dumps({
-        "question": "count events?",
-        "target_collection": "events",
-        "target_database": None,
-        "query_json": {},
-        "result_summary": "5 rows",
-        "source_query_history_id": None,
-        "schema_hash": None,
+        "question_pattern": "统计事件总数",
+        "collections": ["shop.events"],
+        "join_keys": [],
+        "final_query_plan": {
+            "steps": [{
+                "db_type": "mongodb",
+                "database": "shop",
+                "collection": "events",
+                "operation": "aggregate",
+                "query": {"pipeline": []},
+            }],
+        },
+        "result_summary": "在 events 上全量统计",
     })
     with patch("scripts.extract_query_examples_from_history.chat_completion", return_value=llm_resp), \
          patch("scripts.extract_query_examples_from_history.settings") as mock_settings:

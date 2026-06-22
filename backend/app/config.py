@@ -185,14 +185,6 @@ class Settings(BaseSettings):
     knowledge_loader_timeout_secs: int = 10
     """load_all_knowledge 整体超时秒数 (critical SQL + vector retrieve 总和), env: IS_KNOWLEDGE_LOADER_TIMEOUT_SECS"""
 
-    # ── Migration (Stage 1) ──────────────────────────────
-    migration_dry_run: bool = True
-    """数据迁移脚本默认 dry-run, 必须显式 false 才真执行"""
-    migration_backup_dir: str = "./data/backups"
-    """迁移 backup 输出目录"""
-    migration_jaccard_threshold: float = 0.9
-    """迁移后检索一致性最低 Jaccard 分数"""
-
     # ── Agent Loop Tools (Stage 4) ───────────────────────
     agent_learn_source: str = "agent_learn"
     """save_knowledge tool 写入时的 source 字段值"""

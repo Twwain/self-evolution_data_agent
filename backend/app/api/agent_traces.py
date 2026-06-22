@@ -197,7 +197,8 @@ async def refine_traces_endpoint(
         extract_db_context,
         extract_final_pipeline,
         extract_join_fields,
-        extract_primary_query_json,
+        normalize_query_plan,
+        extract_join_keys,
     )
 
     # LLM 语义字段 allowlist — 多塞字段静默丢弃
@@ -208,8 +209,8 @@ async def refine_traces_endpoint(
         "route_hint": {"question_pattern", "reason", "avoid_path"},
         "rule": {"rule_text", "rule_kind", "applies_to_collections",
                  "priority", "evidence"},
-        "example": {"question", "result_summary", "nl_paraphrases",
-                    "schema_hash", "extraction_source"},
+        "example": {"question_pattern", "result_summary",
+                    "collections", "join_keys", "final_query_plan"},
     }
 
     trace_by_id: dict[str, "AgentTrace"] = {r.trace_id: r for r in rows}
@@ -254,13 +255,14 @@ async def refine_traces_endpoint(
             if not p.payload.get("target_collection") and collections:
                 p.payload["target_collection"] = collections[0]
         elif p.entry_type == "example":
-            if not p.payload.get("target_collection") and collections:
-                p.payload["target_collection"] = collections[0]
-            if database:
-                p.payload["target_database"] = database
-            qj = extract_primary_query_json(tool_trace)
-            if qj is not None:
-                p.payload["query_json"] = qj
+            qplan = normalize_query_plan(tool_trace)
+            if qplan is not None:
+                p.payload["final_query_plan"] = qplan
+            if collections:
+                p.payload["collections"] = collections
+            joins = extract_join_keys(qplan)
+            if joins:
+                p.payload["join_keys"] = joins
         elif p.entry_type == "route_hint":
             if collections:
                 p.payload["collection_path"] = collections

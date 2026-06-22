@@ -49,6 +49,8 @@ from app.knowledge.trace_extractor import (
     extract_collections as _extract_collections_impl,
     extract_final_pipeline as _extract_final_pipeline_impl,
     extract_join_fields as _extract_join_fields_impl,
+    normalize_query_plan as _normalize_query_plan_impl,
+    extract_join_keys as _extract_join_keys_impl,
 )
 from app.models import (
     Namespace,
@@ -105,18 +107,15 @@ async def _async_extract_after_end_turn(
         # ── 代码侧抽取 (机械字段, 一定对) ──
         final_pipeline = _extract_final_pipeline(result.tool_trace)
         collections    = _extract_collections(result.tool_trace or [])
-        field_mappings = _extract_field_mappings(result.tool_trace or [])
         cost_strategy  = _derive_cost_strategy(result.tool_trace or [])
         join_fields    = _extract_join_fields(final_pipeline)
-        rows_count, chart_type = _extract_rows_chart(result)
+        rows_count, _  = _extract_rows_chart(result)
         tool_count     = len(result.tool_trace or [])
         trace_summary  = _summarize_tool_trace(result.tool_trace, settings)
 
-        if final_pipeline is None or not collections:
+        if not collections:
             log.warning(
-                "[async_extract] missing final_pipeline or collections trace=%s "
-                "final_pipeline=%r collections=%r",
-                trace_id, final_pipeline, collections,
+                "[async_extract] missing collections trace=%s", trace_id,
             )
             return
 
@@ -142,15 +141,15 @@ async def _async_extract_after_end_turn(
 
         # ── 服务端拼装 (保真) ──
         question_pattern = llm_output["question_pattern"].strip()
+        final_query_plan = _normalize_query_plan_impl(result.tool_trace or [])
         evidence = {"trace_id": trace_id, "tool_count": tool_count, "rows": rows_count}
 
         example = {
             "question_pattern": question_pattern,
-            "final_pipeline":   final_pipeline,
-            "chart_type":       chart_type,
-            "field_mappings":   field_mappings,
             "collections":      collections,
-            "tool_count":       tool_count,
+            "join_keys":        _extract_join_keys(final_query_plan),
+            "final_query_plan": final_query_plan,
+            "result_summary":   llm_output.get("result_summary") or "",
         }
         route_hint = None
         rh_reason = llm_output.get("route_hint_reason")
@@ -976,6 +975,14 @@ def _extract_join_fields(final_pipeline: dict | None) -> list[dict]:
     返回 [{"a": "上游集合.字段", "b": "下游集合.字段"}, ...]. 无 $lookup 返 [].
     """
     return _extract_join_fields_impl(final_pipeline)
+
+
+def _extract_join_keys(final_query_plan: dict | None) -> list[dict]:
+    """从归一化 query_plan 中抽取 join 键对.
+
+    返回 [{from: "上游集合.字段", to: "下游集合.字段"}, ...].
+    """
+    return _extract_join_keys_impl(final_query_plan)
 
 
 def _validate_llm_output_minimal(out: dict) -> None:

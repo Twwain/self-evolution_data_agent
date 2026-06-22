@@ -78,7 +78,7 @@ export interface KnowledgeEntry {
   content: string;
   raw_input: string;
   description: string;
-  source: "manual" | "conversation" | "git" | "auto" | "agent_learn" | "migration";
+  source: "schema" | "manual" | "agent_learn" | "mybatis_extract";
   status: "proposed" | "canonical" | "superseded" | "rejected";
   is_superseded: boolean;
   payload: Record<string, unknown> | null;

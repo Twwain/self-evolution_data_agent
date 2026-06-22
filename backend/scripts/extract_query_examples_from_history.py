@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 from datetime import datetime, timedelta
 
@@ -21,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.metadata import async_session
+from app.engine.json_parser import parse_llm_json
 from app.engine.llm import chat_completion
 from app.models import KnowledgeEntry, Namespace, QueryHistory
 from app.schemas.knowledge_payload import ExamplePayload
@@ -82,17 +82,46 @@ async def _already_extracted(db: AsyncSession, namespace_id: int, question: str)
 # ════════════════════════════════════════════════════════════════════════════
 
 _REFINE_PROMPT = """\
-You are a query librarian. Given a natural language question and its MongoDB query JSON,
-produce a JSON object matching ExamplePayload schema with these fields:
-  question        (string)        — the original question
-  target_collection (string)     — primary MongoDB collection name
-  target_database (string|null)  — database name if identifiable, else null
-  query_json      (object)        — parsed MongoDB query as JSON object
-  result_summary  (string)        — brief description of result shape, empty string if unknown
-  source_query_history_id (null) — always null (filled by caller)
-  schema_hash     (null)          — always null
+<role>You are a query librarian. Given a natural language question and its MongoDB query JSON,
+produce a structured ExamplePayload for the new five-field schema.</role>
 
-Output ONLY valid JSON, no markdown, no extra keys.
+<output_schema>
+{
+  "question_pattern": "<string>  — semantic skeleton: remove one-shot values (IDs, dates, numbers),
+                        keep business nouns, aggregation verbs, and modifier relationships",
+  "collections":         ["<db.collection>"] — ordered collection chain; always at least one element,
+  "join_keys":           [] — always empty for single-collection Q-MQL extractions,
+  "final_query_plan":    {  // unified plan structure, one step for the parsed MQL
+    "steps": [{
+      "db_type": "mongodb",
+      "database": "<string|null> — database name if identifiable from collection context, else null",
+      "collection": "<string> — primary MongoDB collection name",
+      "operation": "aggregate",
+      "query": { "pipeline": [...] }  // parsed MongoDB pipeline array
+    }]
+  },
+  "result_summary": "<string> — ≤120 chars natural-language description of filter/group/aggregate pattern"
+}
+</output_schema>
+
+<constraints>
+- question_pattern MUST abstract away concrete values: replace IDs with "某<entity>", dates with "某时段", numbers with "若干"
+- collections MUST use "db.collection" format when database is identifiable, otherwise just "collection"
+- join_keys MUST be [] (empty array) — Q-MQL history entries are single-collection
+- final_query_plan.steps[0].query.pipeline is the parsed MongoDB pipeline from the raw MQL string
+- result_summary describes the query pattern in plain language: e.g. "在 orders 上按 status 分组, $sum 统计各状态数量"
+</constraints>
+
+<examples>
+Question: "统计某等级会员在某时段下的所有订单, 按商品类目分组统计金额"
+MQL: {"collection":"orders","pipeline":[{"$match":{"memberLevel":"gold","createdAt":{"$gte":"YYYY-MM-DD"}}},{"$group":{"_id":"$category","total":{"$sum":"$amount"}}}]}
+Output:
+{"question_pattern":"某用户等级在某时段下的所有订单, 按商品类目分组统计金额","collections":["shop.orders"],"join_keys":[],"final_query_plan":{"steps":[{"db_type":"mongodb","database":"shop","collection":"orders","operation":"aggregate","query":{"pipeline":[{"$match":{"memberLevel":"gold","createdAt":{"$gte":"YYYY-MM-DD"}}},{"$group":{"_id":"$category","total":{"$sum":"$amount"}}}]}}]},"result_summary":"在 orders 上按 memberLevel 和 createdAt 过滤, 按 category 分组 $sum amount"}
+</examples>
+
+<output>Strictly valid JSON only. No markdown fences, no extra text.</output>
+
+<escape>If the raw MQL cannot be parsed, set final_query_plan to null and result_summary to "". Never fabricate query structure not present in the input.</escape>
 
 Question: {question}
 MQL Query: {raw_query}
@@ -101,25 +130,17 @@ MQL Query: {raw_query}
 
 def _refine_to_example_payload(question: str, raw_query: str) -> ExamplePayload:
     """调 LLM 把原始 MQL 字符串精炼成结构化 ExamplePayload."""
-    prompt = _REFINE_PROMPT.format(question=question, raw_query=raw_query)
+    prompt = _REFINE_PROMPT.replace("{question}", question).replace("{raw_query}", raw_query)
     raw_resp = chat_completion([{"role": "user", "content": prompt}])
-    try:
-        data = json.loads(raw_resp)
-    except json.JSONDecodeError:
+    data = parse_llm_json(raw_resp)
+    if data is None:
         log.warning("LLM refine 返回非 JSON, fallback 使用最小字段: question=%r", question)
-        # 尝试把 raw_query 解析为 dict, 失败则放空 dict
-        try:
-            query_obj = json.loads(raw_query)
-        except json.JSONDecodeError:
-            query_obj = {}
         data = {
-            "question": question,
-            "target_collection": "",
-            "target_database": None,
-            "query_json": query_obj,
+            "question_pattern": question,
+            "collections": [],
+            "join_keys": [],
+            "final_query_plan": None,
             "result_summary": "",
-            "source_query_history_id": None,
-            "schema_hash": None,
         }
     return ExamplePayload(**data)
 

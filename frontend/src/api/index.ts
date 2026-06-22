@@ -109,9 +109,6 @@ export const getRepoProgress = (nsId: number, repoId: number) =>
 export const batchParseRepos = (nsId: number, force = false) =>
   http.post(`/namespaces/${nsId}/repos/batch-parse`, null, { params: force ? { force: true } : {} }).then((r) => r.data);
 
-export const getGitKeSummary = (nsId: number): Promise<{ total: number; canonical: number }> =>
-  http.get(`/namespaces/${nsId}/git-ke-summary`).then((r) => r.data);
-
 export const cancelParse = (nsId: number, repoId: number) =>
   http.post(`/namespaces/${nsId}/repos/${repoId}/cancel`).then((r) => r.data);
 

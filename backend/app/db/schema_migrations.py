@@ -483,9 +483,6 @@ async def run_all(engine: AsyncEngine) -> None:
     # 列. /collections 接口 mysql+mongodb 已统一走 SchemaCanonicalObject 真相源,
     # snapshot 列 0 读 0 写, 永久退役.
     await _drop_datasource_schema_snapshot_column(engine)
-    # migration_020 (terminology-schema-attribution): 存量术语 KE/冲突回填.
-    # 术语只归属 schema/namespace: source git→schema, repo_id→NULL. 幂等纯 UPDATE.
-    await _migrate_terminology_source_to_schema(engine)
     # migration_021 (three-tier-rbac): role 扩列 + ns.created_by + admin 升级 + 回填 + FK 修复
     await _migrate_rbac_three_tier(engine)
     # migration_022 (datasource-catalog): DataSource 加 description + db_profile_json.
@@ -806,27 +803,6 @@ async def _drop_datasource_schema_snapshot_column(engine: AsyncEngine) -> None:
     log.info(
         "[schema_migrations] datasources.schema_snapshot_json column dropped "
         "(migration_019)"
-    )
-
-
-async def _migrate_terminology_source_to_schema(engine: AsyncEngine) -> None:
-    """migration_020 (terminology-schema-attribution): 存量术语 KE/冲突回填.
-
-    术语只归属 schema/namespace: source git→schema, repo_id→NULL.
-    幂等: 二次运行 WHERE 命中 0 行.
-    """
-    async with engine.begin() as conn:
-        await conn.execute(text(
-            "UPDATE knowledge_entries SET source='schema', repo_id=NULL "
-            "WHERE entry_type='terminology' AND source='git'"
-        ))
-        await conn.execute(text(
-            "UPDATE terminology_conflicts SET candidate_source='schema', "
-            "candidate_repo_id=NULL "
-            "WHERE candidate_source='git'"
-        ))
-    log.info(
-        "[schema_migrations] terminology source git→schema migrated (migration_020)"
     )
 
 
