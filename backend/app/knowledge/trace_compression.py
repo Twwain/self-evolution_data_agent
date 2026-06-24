@@ -108,6 +108,8 @@ def _summarize_sql(sql: str) -> str:
 
 def compact_tool_call(idx: int, call: dict) -> dict:
     """单 tool call 压成 ~10 字段 dict. 不会抛异常."""
+    if not isinstance(call, dict):
+        return {"step": idx, "tool": ""}
     name = call.get("name", "")
     inp = call.get("input") or {}
     out = call.get("output") or {}
@@ -188,14 +190,45 @@ def compact_tool_call(idx: int, call: dict) -> dict:
                     if isinstance(h, dict)
                 ]
 
-    elif name == "recommend_chart":
-        rec["chart_type"] = (out or {}).get("chart_type") if isinstance(out, dict) else None
-        rec["category_column"] = inp.get("category_column")
-
     elif name == "present_result":
-        spec = (out or {}).get("chart_spec") if isinstance(out, dict) else None
-        rec["chart_type"] = (spec or {}).get("chart_type") if isinstance(spec, dict) else None
-        rec["category_column"] = (spec or {}).get("x") if isinstance(spec, dict) else None
+        # chart_spec 在 input, 不在 output (修预存 bug)
+        spec = inp.get("chart_spec") if isinstance(inp, dict) else None
+        if isinstance(spec, dict):
+            rec["chart_type"] = spec.get("chart_type")
+            x = spec.get("x")
+            if x:
+                rec["category_column"] = x
+
+    elif name == "list_databases":
+        if isinstance(out, dict):
+            dbs = out.get("databases")
+            if isinstance(dbs, list):
+                rec["db_count"] = len(dbs)
+
+    elif name == "list_tables":
+        rec["database"] = inp.get("database")
+        if isinstance(out, dict):
+            tbls = out.get("tables")
+            if isinstance(tbls, list):
+                rec["table_count"] = len(tbls)
+            if out.get("status"):
+                rec["status"] = out.get("status")
+
+    elif name == "generate_query_plan":
+        colls = inp.get("collections")
+        if isinstance(colls, list):
+            rec["plan_collections"] = [
+                c.get("collection") for c in colls
+                if isinstance(c, dict) and c.get("collection")
+            ]
+        plan = out.get("plan") if isinstance(out, dict) else None
+        if isinstance(plan, dict):
+            strategy = plan.get("strategy")
+            if strategy:
+                rec["plan_strategy"] = str(strategy)[:60]
+            steps = plan.get("steps")
+            if isinstance(steps, list):
+                rec["plan_step_count"] = len(steps)
 
     elif name == "execute_plan":
         plan = inp.get("plan") or {}
@@ -205,20 +238,41 @@ def compact_tool_call(idx: int, call: dict) -> dict:
             s.get("collection") for s in steps
             if isinstance(s, dict) and s.get("collection")
         ]
+        # ── output: 最终行数 (返回值侧) ──
+        if isinstance(out, dict):
+            total = out.get("total_row_count")
+            if isinstance(total, int):
+                rec["rows_returned"] = total
+            else:
+                rows = out.get("rows")
+                if isinstance(rows, list):
+                    rec["rows_returned"] = len(rows)
+            if out.get("truncated"):
+                rec["truncated"] = True
 
     elif name == "clarify_with_user":
         rec["question"] = (inp.get("question") or "")[:120]
         if isinstance(out, dict):
-            rec["user_answer"] = (out.get("answer") or "")[:80]
+            # 工具实际返 {user_answer, timeout, pending_id} (非 "answer")
+            rec["user_answer"] = (out.get("user_answer") or "")[:80]
 
     elif name == "estimate_cost":
         if isinstance(out, dict):
             rec["est_rows"] = out.get("estimated_rows") or out.get("rows")
-            rec["blocked"] = out.get("blocked")
+            # CostEstimate 返 warning_level: "ok"|"high"|"blocked" (非 blocked 布尔键)
+            wl = out.get("warning_level")
+            if wl:
+                rec["warning_level"] = wl
+            rec["blocked"] = (wl == "blocked")
 
     elif name == "save_knowledge":
         rec["entry_type"] = inp.get("entry_type")
 
+    # error 可能在顶层 call.error 或 output.error/output.message (依工具/路径:
+    # 如 execute_query 截断返 {error: result_truncated_use_plan, message:..., result_ref},
+    # 无 rows/count — 仅当 output.error 存在才取, 避免误捕成功 output 的 message).
+    if not error and isinstance(out, dict) and out.get("error"):
+        error = out.get("message") or out.get("error")
     if error:
         rec["error"] = str(error)[:200]
     return rec
