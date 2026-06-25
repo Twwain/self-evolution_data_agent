@@ -11,6 +11,7 @@ import {
   BookOutlined,
   UserOutlined,
   LogoutOutlined,
+  RobotOutlined,
   ShareAltOutlined,
   ExperimentOutlined,
   SettingOutlined,
@@ -24,6 +25,7 @@ import styles from "@/styles/layout.module.css";
 const adminNavItems = [
   { path: "/", icon: <BarChartOutlined />, label: "智能查询" },
   { path: "/namespaces", icon: <DatabaseOutlined />, label: "命名空间" },
+  { path: "/model-management", icon: <RobotOutlined />, label: "模型管理" },
   { path: "/knowledge", icon: <BookOutlined />, label: "知识库" },
   { path: "/profiles", icon: <SettingOutlined />, label: "Profile 管理" },
   { path: "/admin/agent-traces", icon: <ExperimentOutlined />, label: "Trace 提炼" },

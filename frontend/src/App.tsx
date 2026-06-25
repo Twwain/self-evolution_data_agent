@@ -16,6 +16,7 @@ import ShareViewPage from "./pages/ShareViewPage";
 import AgentTracesPage from "./pages/AgentTracesPage";
 import ProfilePage from "./pages/ProfilePage";
 import ProfileManagement from "./pages/ProfileManagement";
+import ModelManagement from "./pages/ModelManagement";
 import { roleAtLeast } from "@/utils/role";
 
 /* ── 认证守卫 ── */
@@ -49,6 +50,7 @@ const App: React.FC = () => (
             <Route path="/namespaces" element={<NamespacePage />} />
             <Route path="/knowledge" element={<KnowledgePage />} />
             <Route path="/profiles" element={<ProfileManagement />} />
+            <Route path="/model-management" element={<ModelManagement />} />
             <Route path="/users" element={<UserManagePage />} />
             <Route path="/shares" element={<ShareManagePage />} />
             <Route path="/admin/agent-traces" element={<AgentTracesPage />} />
