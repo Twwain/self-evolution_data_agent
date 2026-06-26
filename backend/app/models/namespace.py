@@ -40,7 +40,7 @@ class DataSource(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     namespace_id: Mapped[int] = mapped_column(ForeignKey("namespaces.id", ondelete="CASCADE"))
-    db_type: Mapped[str] = mapped_column(String(20))  # mysql | mongodb
+    db_type: Mapped[str] = mapped_column(String(20))  # mysql | oracle | mongodb
     host: Mapped[str] = mapped_column(String(255))
     port: Mapped[int]
     database: Mapped[str] = mapped_column(String(100))

@@ -399,28 +399,6 @@ class Settings(BaseSettings):
     oracle_connect_timeout_secs: int = 10
     """TCP 握手超时 (tcp_connect_timeout). env: IS_ORACLE_CONNECT_TIMEOUT_SECS"""
 
-    # ── Oracle Driver Pool ────────────────────────────────
-    # Thin mode (默认): 不需要 Oracle Instant Client, 支持 Oracle 12.1+.
-    # Thick mode: 需要 Oracle Instant Client; 支持 Oracle 11g+.
-    #   - 设置 IS_ORACLE_THICK_MODE_LIB_DIR 为 Instant Client 目录路径启用.
-    #   - 例: /opt/oracle/instantclient_21_1 (Linux) 或 /usr/local/oracle (macOS x86).
-    oracle_thick_mode_lib_dir: str = ""
-    """Oracle Instant Client 目录 (非空则启用 Thick mode). env: IS_ORACLE_THICK_MODE_LIB_DIR"""
-
-    # min=0: 启动时不预建连接, 按需增长; 生产如需预热可改为 1.
-    oracle_pool_min_size: int = 0
-    """oracledb AsyncConnectionPool min. env: IS_ORACLE_POOL_MIN_SIZE"""
-    oracle_pool_max_size: int = 5
-    """oracledb AsyncConnectionPool max. env: IS_ORACLE_POOL_MAX_SIZE"""
-    oracle_pool_increment: int = 1
-    """oracledb AsyncConnectionPool increment. env: IS_ORACLE_POOL_INCREMENT"""
-    oracle_pool_timeout_secs: int = 10
-    """等待连接超时 (pool wait_timeout = × 1000 ms). env: IS_ORACLE_POOL_TIMEOUT_SECS"""
-    oracle_query_timeout_secs: int = 30
-    """单 SQL 执行超时. env: IS_ORACLE_QUERY_TIMEOUT_SECS"""
-    oracle_connect_timeout_secs: int = 10
-    """TCP 握手超时 (tcp_connect_timeout). env: IS_ORACLE_CONNECT_TIMEOUT_SECS"""
-
     # ── Langfuse 追踪 ──
     # 方式 1: 自部署 — docker compose -f docker-compose.langfuse.yml up -d
     #   IS_LANGFUSE_HOST=http://localhost:3001
