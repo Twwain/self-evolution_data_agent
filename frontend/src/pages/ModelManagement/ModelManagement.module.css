@@ -112,6 +112,7 @@
 .provOpenai   { background: rgba(16,163,127,0.08); color: #10a37f; }
 .provSilicon  { background: rgba(14,165,233,0.08); color: #0ea5e9; }
 .provZhipu    { background: rgba(245,130,13,0.08); color: #f5820d; }
+.provAnthropic { background: rgba(204,120,64,0.08); color: #cc7840; }
 .provCustom   { background: rgba(107,114,128,0.08); color: #6b7280; }
 
 /* ── 徽章：模型类型 ───────────────────────── */

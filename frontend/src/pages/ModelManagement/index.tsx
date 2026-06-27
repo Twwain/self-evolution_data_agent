@@ -21,6 +21,7 @@ const PROVIDER_META: Record<string, { label: string; abbr: string; cls: string }
   openai:      { label: "OpenAI",                 abbr: "AI", cls: styles.provOpenai },
   siliconflow: { label: "Siliconflow",            abbr: "Si", cls: styles.provSilicon },
   zhipu:       { label: "智谱 AI",               abbr: "ZP", cls: styles.provZhipu },
+  anthropic:   { label: "Anthropic",              abbr: "An", cls: styles.provAnthropic },
   custom:      { label: "Custom",                 abbr: "Cu", cls: styles.provCustom },
 };
 
