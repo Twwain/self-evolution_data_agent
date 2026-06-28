@@ -23,7 +23,7 @@ import type {
   User,
 } from "@/types";
 
-const http = axios.create({ baseURL: "/api", timeout: 60_000 });
+export const http = axios.create({ baseURL: "/api", timeout: 60_000 });
 
 // ── 请求拦截: 自动附加 JWT ──
 http.interceptors.request.use((config) => {
