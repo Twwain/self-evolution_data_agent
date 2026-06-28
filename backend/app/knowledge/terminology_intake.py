@@ -3,7 +3,7 @@
 # ════════════════════════════════════════════════════════════════
 #  设计契约
 # ════════════════════════════════════════════════════════════════
-# 3 通道 (schema / manual / agent_learn / clarify) 共用同一闸门:
+# 3 通道 (schema / manual / agent_learn) 共用同一闸门:
 #
 #   1. Schema 校验 (TerminologyPayload Pydantic, 失败 → None, 不写库)
 #   2. db_type 一致性 (ns 下 primary_database 实际类型 ≠ payload.db_type → None)
@@ -19,7 +19,6 @@
 
 import json
 import logging
-from typing import Literal
 
 from pydantic import ValidationError
 from sqlalchemy import cast, select
@@ -27,14 +26,13 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.knowledge_audit_log import KnowledgeAuditLog
-from app.models.knowledge_entry import KnowledgeEntry
+from app.models.knowledge_entry import KnowledgeEntry, KnowledgeSource
 from app.models.namespace import DataSource
 from app.models.terminology_conflict import TerminologyConflict
 from app.schemas.knowledge_payload import TerminologyPayload
 
 log = logging.getLogger(__name__)
 
-Source = Literal["schema", "manual", "agent_learn", "clarify"]
 
 
 # ════════════════════════════════════════════════════════════════
@@ -58,7 +56,7 @@ async def _resolve_db_type(db: AsyncSession, ns_id: int, database: str) -> str |
 #  Step 1 — schema 校验
 # ════════════════════════════════════════════════════════════════
 async def _validate_payload(
-    payload_dict: dict, source: Source,
+    payload_dict: dict, source: KnowledgeSource,
 ) -> TerminologyPayload | None:
     try:
         return TerminologyPayload(**payload_dict)
@@ -119,7 +117,7 @@ async def _create_proposed(
     db: AsyncSession,
     ns_id: int,
     parsed: TerminologyPayload,
-    source: Source,
+    source: KnowledgeSource,
     repo_id: int | None,
     raw_input: str,
     evidence: dict | None,
@@ -159,7 +157,7 @@ async def _merge_or_skip(
     existing: KnowledgeEntry,
     existing_payload: TerminologyPayload,
     parsed: TerminologyPayload,
-    source: Source,
+    source: KnowledgeSource,
 ) -> KnowledgeEntry | None:
     """canonical 一律不合并 (含所有来源) — 返 None 让 caller 落 conflict.
 
@@ -213,7 +211,7 @@ async def _record_conflict(
     existing: KnowledgeEntry,
     existing_payload: TerminologyPayload,
     parsed: TerminologyPayload,
-    source: Source,
+    source: KnowledgeSource,
     repo_id: int | None,
 ) -> None:
     conflict = TerminologyConflict(
@@ -240,7 +238,7 @@ async def upsert_terminology_with_validation(
     *,
     ns_id: int,
     payload_dict: dict,
-    source: Source,
+    source: KnowledgeSource,
     repo_id: int | None = None,
     raw_input: str = "",
     evidence: dict | None = None,

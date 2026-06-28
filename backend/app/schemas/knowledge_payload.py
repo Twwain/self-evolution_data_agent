@@ -59,7 +59,7 @@ class TerminologyPayload(BaseModel):
 
 
 class ExamplePayload(BaseModel):
-    """统一 example payload — agent_learn + mybatis_extract + trace_refiner 共用.
+    """统一 example payload — agent_learn + code_extract + trace_refiner 共用.
 
     question_pattern: 语义骨架, ChromaDB 索引入口.
     collections:      有序 db.collection 链 ["shop.orders", "shop.users"].

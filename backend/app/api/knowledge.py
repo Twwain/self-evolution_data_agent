@@ -827,16 +827,10 @@ async def batch_parse_repos(
             started_any = False
             try:
                 async with _async_session() as clean_db:
-                    ke_report = await _clean_namespace_knowledge_entries(
-                        clean_db, ns_id, ns.slug, actor_id=admin.id,
-                    )
                     mongo_stats = await _clean_namespace_mongo_canonical(clean_db, ns_id)
                     log.info(
-                        "[batch-parse] 全量清理完成 ns=%s ke_deleted=%d "
-                        "ke_preserved=%d audit_id=%s mongo=%s",
-                        ns.slug, ke_report.affected_count,
-                        ke_report.preserved_audited_count,
-                        ke_report.audit_log_id, mongo_stats,
+                        "[batch-parse] 全量清理完成 ns=%s mongo=%s",
+                        ns.slug, mongo_stats,
                     )
                 for rid in repo_ids:
                     try:
@@ -1002,43 +996,6 @@ async def get_parse_report(
     if not repo.parse_report:
         raise HTTPException(404, "暂无解析报告")
     return ParseReportOut(**json.loads(repo.parse_report))
-
-
-# ════════════════════════════════════════════
-#  全量清理 — 命名空间知识库从零重建的前置操作
-# ════════════════════════════════════════════
-
-async def _clean_namespace_knowledge_entries(
-    db: AsyncSession, ns_id: int, ns_slug: str, actor_id: int | None,
-):
-    """步骤 2: 通过 BulkOperationGuard 清 KnowledgeEntry (走宪章 6 条)
-
-    scope_filter:
-        - source ∈ {self_answer, clarify}
-                                        — Stage 1 §1.4: +clarify 修复隐藏缺口
-        - namespace_id = ns_id           — 必须显式隔离, BulkOpGuard 不会自动按命名空间隔离
-
-    宪章 §3 兜底:
-        audit_log 中 actor_id != NULL ∧ action ∈ {approve, edit} 的人类编辑过条目永不批删.
-    宪章 §4 / §6:
-        真删自动写 audit_log + best-effort 同步 ChromaDB.
-
-    返回:
-        BulkOpReport (含 affected_count / preserved_audited_count / audit_log_id)
-    """
-    from app.knowledge.bulk_guard import BulkOperationGuard
-
-    guard = BulkOperationGuard(
-        op_name="git_reparse_clean_namespace",
-        scope_filter={
-            "source": ["self_answer", "clarify"],
-            "namespace_id": ns_id,
-        },
-        dry_run=False,
-        actor_id=actor_id,
-        reason=f"force-reparse namespace_id={ns_id}",
-    )
-    return await guard.execute(db, slug=ns_slug)
 
 
 async def _clean_namespace_mongo_canonical(db: AsyncSession, ns_id: int) -> dict:

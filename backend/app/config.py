@@ -320,14 +320,6 @@ class Settings(BaseSettings):
     agent_keepalive_interval_secs: int = 30  # noqa: hardcode
     """SSE 心跳发送间隔, 防客户端连接超时"""
 
-    # ── Q-MQL Extraction (Stage 5) ───────────────────────
-    qmql_extract_interval_hours: int = 24  # noqa: hardcode
-    """Q-MQL 后台提取脚本运行周期 (小时)"""
-    qmql_extract_min_success_age_hours: int = 1  # noqa: hardcode
-    """Q-MQL 提取候选最少保存时长, 低于此值不提取 (防新增 QueryHistory 还未充分冷却)"""
-    qmql_extract_max_per_run: int = 50  # noqa: hardcode
-    """Q-MQL 单次提取最多条数 (避免 LLM token 爆表)"""
-
     # ── Code Parser (Stage 2 Task 8 — hardcode 治理搬 settings) ──
     code_parse_batch_char_limit: int = 48000  # noqa: hardcode
     """LLM 全量解析每批累计字符上限 (~18K token)"""

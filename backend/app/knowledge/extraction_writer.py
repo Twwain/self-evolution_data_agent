@@ -476,7 +476,7 @@ async def _write_business_examples(
     """sql2nl → example KE (D3 恢复). Stage A 下线, 本 spec 经 agentic 管线恢复为核心产出.
 
     每个 example dict (agent emit_knowledge entry_type=example 的 payload) →
-    KnowledgeEntry(entry_type='example', status='proposed', source='mybatis_extract').
+    KnowledgeEntry(entry_type='example', status='proposed', source='code_extract').
     """
     total = 0
     for ex in business_examples:
@@ -488,7 +488,7 @@ async def _write_business_examples(
             entry_type="example",
             status="proposed",
             tier="normal",
-            source="mybatis_extract",
+            source="code_extract",
             repo_id=repo_id,
             content=f"查询模式: {sql[:120]}",
             payload=json.dumps({
@@ -532,7 +532,7 @@ async def _write_rule_ke(
         tier="normal",
         content=rule_text,
         payload=payload.model_dump_json(),
-        source="mybatis_extract",
+        source="code_extract",
         repo_id=repo_id,
         raw_input=rule_text,
     )
@@ -627,7 +627,7 @@ async def _write_route_hints(
                 "extraction_source": "mybatis_extract",
                 "source_repo_id": repo_id,
             }, ensure_ascii=False),
-            source="mybatis_extract",
+            source="code_extract",
             repo_id=repo_id,
         )
         db.add(ke)

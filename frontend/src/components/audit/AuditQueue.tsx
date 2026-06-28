@@ -101,7 +101,7 @@ export default function AuditQueue({
             { label: "Schema 抽取", value: "schema" },
             { label: "手动", value: "manual" },
             { label: "Agent 学习", value: "agent_learn" },
-            { label: "MyBatis 提取", value: "mybatis_extract" },
+            { label: "代码提取", value: "code_extract" },
           ]} style={{ width: 130 }} />
         {showStatusFilter && !status && (
           <Select placeholder="状态" allowClear value={statusFilter} onChange={setStatusFilter}

@@ -209,7 +209,7 @@ async def test_refine_collides_with_terminology_unique_index(fn_session, fn_admi
         tier="normal",
         status="canonical",
         is_superseded=False,
-        source="git",
+        source="code_extract",
         payload=_json.dumps({
             "term": "订单",
             "primary_collection": "c_orders",

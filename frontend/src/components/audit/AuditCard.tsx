@@ -39,8 +39,7 @@ const SOURCE_LABELS: Record<string, string> = {
   schema:        "Schema 抽取",
   manual:        "手动",
   agent_learn:   "Agent 学习",
-  mybatis_extract: "MyBatis 提取",
-  qmql_extract:  "Q-MQL 提取",
+  code_extract: "代码提取",
 };
 
 const TIER_LABELS: Record<string, string> = {
