@@ -76,6 +76,33 @@ def _get_claude_client() -> anthropic.Anthropic:
     return _claude_client
 
 
+def build_chat_client(
+    api_key: str,
+    base_url: str,
+    protocol: str = "openai",
+    *,
+    timeout: float = 15,
+) -> "OpenAI | anthropic.Anthropic":
+    """临时 LLM 客户端工厂（不缓存，不读 settings，用于连接测试等一次性场景）.
+
+    Args:
+        api_key:  API 密钥（明文，已由调用方解密）。
+        base_url: API 基础地址。
+        protocol: ``"openai"`` 或 ``"anthropic"``。
+        timeout:  HTTP 超时秒数，默认 15 s。
+
+    Returns:
+        openai.OpenAI 或 anthropic.Anthropic 实例，未缓存。
+    """
+    if protocol == "anthropic":
+        return anthropic.Anthropic(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+        )
+    return OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+
+
 # ════════════════════════════════════════════
 #  Langfuse generation 元数据回填
 #  — 在 @observe 上下文内安全调用, 无 trace 时 get_client() 返回 None
@@ -426,7 +453,12 @@ class LLMResponse:
         self.truncated = truncated
 
 
-@observe(as_type="generation", name="chat_completion_checked", capture_input=False, capture_output=False)
+@observe(
+    as_type="generation",
+    name="chat_completion_checked",
+    capture_input=False,
+    capture_output=False,
+)
 def chat_completion_checked(
     messages: list[dict],
     temperature: float = 0.1,
@@ -558,7 +590,12 @@ class ToolUseResponse:
     usage: dict = field(default_factory=dict)
 
 
-@observe(as_type="generation", name="chat_completion_with_tools", capture_input=False, capture_output=False)
+@observe(
+    as_type="generation",
+    name="chat_completion_with_tools",
+    capture_input=False,
+    capture_output=False,
+)
 async def chat_completion_with_tools(
     messages: list[dict],
     tools: list[dict],
@@ -721,7 +758,8 @@ def _claude_tool_use(
 
             # 转换 assistant 消息：OpenAI 格式 → Claude 格式
             # OpenAI: {"role": "assistant", "content": str, "tool_calls": [...]}
-            # Claude:  {"role": "assistant", "content": [{"type": "text", ...}, {"type": "tool_use", ...}]}
+            # Claude:  {"role": "assistant", "content":
+            #            [{"type": "text", ...}, {"type": "tool_use", ...}]}
             content_blocks = []
             if m.get("content"):
                 content_blocks.append({"type": "text", "text": m["content"]})
