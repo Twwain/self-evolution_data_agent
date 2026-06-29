@@ -61,8 +61,9 @@ def _sanitize_tool_use_id(raw_id: str) -> str:
 
 def _get_openai_client(cfg: dict[str, Any] | None = None) -> OpenAI:
     """返回 OpenAI 兼容客户端 (从 registry 激活配置构造, 热切换自动重建)."""
+    # import 必须无条件: 否则 cfg 非 None 时跳过分支, registry 未绑定 → UnboundLocalError
+    from app.engine.model_registry import registry
     if cfg is None:
-        from app.engine.model_registry import registry
         cfg = registry.chat_config
     if cfg is None or cfg.get("protocol", "openai") != "openai":
         raise RuntimeError(
@@ -74,8 +75,9 @@ def _get_openai_client(cfg: dict[str, Any] | None = None) -> OpenAI:
 
 def _get_claude_client(cfg: dict[str, Any] | None = None) -> anthropic.Anthropic:
     """返回 Anthropic 客户端 (从 registry 激活配置构造, 热切换自动重建)."""
+    # import 必须无条件: 否则 cfg 非 None 时跳过分支, registry 未绑定 → UnboundLocalError
+    from app.engine.model_registry import registry
     if cfg is None:
-        from app.engine.model_registry import registry
         cfg = registry.chat_config
     if cfg is None or cfg.get("protocol") != "anthropic":
         raise RuntimeError(
