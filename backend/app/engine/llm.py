@@ -700,7 +700,7 @@ async def chat_completion_with_tools(
 
 # ── OpenAI-compatible (Chat Completions function calling) ──
 
-def _build_assistant_message(response: ToolUseResponse, *,
+def build_assistant_message(response: ToolUseResponse, *,
                              tool_calls: list[ToolCall] | None = None) -> dict:
     """构造中性 assistant 消息，含 reasoning_content（如有）。
 

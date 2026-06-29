@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from app.knowledge.skeleton._base import WorkUnit
 
 from app.config import settings
-from app.engine.llm import _build_assistant_message, chat_completion_with_tools
+from app.engine.llm import build_assistant_message, chat_completion_with_tools
 from app.knowledge.extraction_emit import validate_emit
 from app.knowledge.extraction_prompts import load_prompt_or_fallback
 from app.knowledge.extraction_tools import (
@@ -294,7 +294,7 @@ async def run_extraction_agent(
 
         # ── 单条 assistant message 包含全部已处理的 tool_calls (对齐 agent_loop.py:367-375) ──
         processed_tcs = [tc for tc, _ in tool_results]
-        messages.append(_build_assistant_message(response, tool_calls=processed_tcs))
+        messages.append(build_assistant_message(response, tool_calls=processed_tcs))
         for tc, result in tool_results:
             messages.append({
                 "role": "tool",
