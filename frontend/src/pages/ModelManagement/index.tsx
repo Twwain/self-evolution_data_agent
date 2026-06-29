@@ -12,6 +12,7 @@ import {
   testModelConnection,
 } from "@/api/modelConfig";
 import ModelForm from "./ModelForm";
+import { hasOtherActiveEmbedding, isEmbeddingEditLocked } from "./modelFormUtils";
 import styles from "./ModelManagement.module.css";
 
 /* ── 厂商元信息 ──────────────────────────────────────────── */
@@ -59,15 +60,9 @@ export default function ModelManagement() {
   };
 
   const handleActivate = async (cfg: ModelConfig) => {
-    // 前置提示：Embedding 且已有其他 active 配置时，提前告知用户
-    if (cfg.model_type === "EMBEDDING") {
-      const otherActive = configs.find(
-        (c) => c.model_type === "EMBEDDING" && c.is_active && c.id !== cfg.id
-      );
-      if (otherActive) {
-        message.error("Embedding 模型切换需要重建知识库索引，首期不支持直接热切换");
-        return;
-      }
+    if (cfg.model_type === "EMBEDDING" && hasOtherActiveEmbedding(configs, cfg.id!)) {
+      message.error("Embedding 模型切换需要重建知识库索引，首期不支持直接热切换");
+      return;
     }
     setActivatingId(cfg.id!);
     try {
@@ -201,7 +196,7 @@ export default function ModelManagement() {
                     <span className={styles.pathTag}>{pathDisplay}</span>
                   </td>
                   <td>{cfg.model_type === "CHAT" ? (cfg.temperature ?? 0) : "—"}</td>
-                  <td>{cfg.model_type === "CHAT" ? (cfg.max_tokens ?? 2000) : "—"}</td>
+                  <td>{cfg.model_type === "CHAT" ? (cfg.max_tokens ?? 12288) : "—"}</td>
                   <td>
                     <span className={cfg.is_active ? styles.badgeActive : styles.badgeDisabled}>
                       {cfg.is_active ? "已激活" : "未激活"}
@@ -235,7 +230,7 @@ export default function ModelManagement() {
 
                       {/* 编辑 */}
                       {(() => {
-                        const embeddingLocked = cfg.model_type === "EMBEDDING" && cfg.is_active;
+                        const embeddingLocked = isEmbeddingEditLocked(cfg);
                         return (
                           <button
                             className={`${styles.actBtn} ${styles.actEdit}`}
@@ -250,7 +245,7 @@ export default function ModelManagement() {
 
                       {/* 删除（二次确认）*/}
                       {(() => {
-                        const embeddingLocked = cfg.model_type === "EMBEDDING" && cfg.is_active;
+                        const embeddingLocked = isEmbeddingEditLocked(cfg);
                         return (
                           <button
                             className={`${styles.actBtn} ${styles.actDelete} ${deletingId === cfg.id ? styles.confirmDelete : ""}`}

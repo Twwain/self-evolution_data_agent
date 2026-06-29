@@ -1,16 +1,15 @@
 """模型注册中心 — 独立的大模型管理与调用封装.
 
 配置来源与边界（重要）：
-- 本 registry 只读取 model_configs 表中的 active config。
-- 不 fallback 到 env / settings（IS_LLM_* / IS_EMBEDDING_* 等环境变量由旧链路使用）。
-- DB 中无 active config 时，chat_completion() / embed() 抛明确 RuntimeError，不隐式降级。
-- 旧链路（llm.py / embedding.py）继续读取 env，与本 registry 并行、互不干扰。
-- 首期不自动把 env seed 到 DB；如需初始化，由管理员在模型管理页面手动添加并激活。
+- 所有 LLM 调用统一走 registry，从 model_configs 表读取激活配置。
+- DB 中无 active config → RuntimeError 引导管理员前往 Web UI 配置。
+- 项目启动不依赖 LLM 配置：无 active config 时保持未就绪，
+  管理员随时通过 Web UI 添加激活，即时生效无需重启。
 
 设计原则：
-- 完全独立，不修改、不替换现有 llm.py / embedding.py
-- 从 model_configs 表读取激活配置，在内存中缓存运行时实例
-- 对外暴露 chat_completion() / embed() 两个可直接调用的方法
+- llm.py / embedding.py 的 client 构造已切到 registry.get_chat_client/get_embedding_client
+- 内存缓存 + cfg-keyed 单槽 cache + 双检锁保证并发安全
+- Chat 支持运行时热切换；Embedding 仅启动时初始化一次（切换需重嵌入）
 
 切换策略：
 - Chat：支持运行时热切换，新请求即时生效，无需重建任何索引。
@@ -21,14 +20,12 @@
 使用示例：
     from app.engine.model_registry import registry
 
-    # Chat 调用
-    reply = registry.chat_completion([{"role": "user", "content": "你好"}])
-
-    # Embedding 调用
-    vectors = registry.embed(["文本1", "文本2"])
-
     # 就绪检查
     ready = registry.is_ready()
+    # Chat client (由 llm.py::_get_openai_client 内部调用)
+    client = registry.get_chat_client()
+    # Embedding client (由 embedding.py::DashScopeEmbeddingFunction 内部调用)
+    emb_client = registry.get_embedding_client()
 """
 from __future__ import annotations
 
@@ -38,7 +35,22 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-_BATCH_SIZE = 10  # Embedding 单次最多条数（与 embedding.py 一致）
+MAX_TOKENS_DEFAULT = 12288  # max_tokens 统一默认值, llm.py/Web UI 共用
+_CLIENT_TIMEOUT = 15  # OpenAI/Anthropic HTTP client timeout (秒)
+
+
+def _build_proxy_url(cfg: dict[str, Any]) -> str | None:
+    """根据配置构造 HTTP 代理 URL, proxy_enabled=False 或缺 host 时返回 None."""
+    if not cfg.get("proxy_enabled"):
+        return None
+    host = cfg.get("proxy_host")
+    if not host:
+        return None
+    port = cfg.get("proxy_port") or 80
+    user = cfg.get("proxy_username")
+    pwd = cfg.get("proxy_password") or ""
+    auth = f"{user}:{pwd}@" if user else ""
+    return f"http://{auth}{host}:{port}"
 
 
 class ModelRegistry:
@@ -52,6 +64,9 @@ class ModelRegistry:
         # 运行时客户端缓存（配置未变时复用，切换时置 None）
         self._chat_client: Any | None = None       # openai.OpenAI
         self._embedding_client: Any | None = None  # openai.OpenAI
+        # cfg-keyed cache key — 切换配置后 key 变化, 触发 client 重建
+        self._chat_client_key: tuple | None = None
+        self._embedding_client_key: tuple | None = None
 
     # ── 配置刷新（热切换入口）────────────────────────────────
 
@@ -60,6 +75,7 @@ class ModelRegistry:
         with self._lock:
             self._chat_config = config
             self._chat_client = None
+            self._chat_client_key = None
         log.info("[model_registry] Chat 配置已更新: %s",
                  config.get("model_name") if config else "已清空")
 
@@ -68,6 +84,7 @@ class ModelRegistry:
         with self._lock:
             self._embedding_config = config
             self._embedding_client = None
+            self._embedding_client_key = None
         log.info("[model_registry] Embedding 配置已更新: %s",
                  config.get("model_name") if config else "已清空")
 
@@ -81,161 +98,99 @@ class ModelRegistry:
             "ready": self._chat_config is not None and self._embedding_config is not None,
         }
 
-    # ── Chat 调用 ─────────────────────────────────────────────
+    # ── 公开只读配置 ─────────────────────────────────────────
 
-    def chat_completion(
-        self,
-        messages: list[dict[str, str]],
-        temperature: float | None = None,
-        max_tokens: int | None = None,
-    ) -> str:
-        """使用激活的 Chat 模型发起对话，返回文本内容.
+    @property
+    def chat_config(self) -> dict[str, Any] | None:
+        """当前激活的 Chat 配置 (含 protocol/model_name/base_url/api_key/temperature/max_tokens)."""
+        return self._chat_config
 
-        若无激活配置，抛 RuntimeError 提示先在模型管理中配置。
-        temperature / max_tokens 为 None 时使用数据库中配置的值。
+    @property
+    def embedding_config(self) -> dict[str, Any] | None:
+        """当前激活的 Embedding 配置."""
+        return self._embedding_config
+
+    def get_chat_client(self, cfg: dict[str, Any] | None = None) -> Any:
+        """返回当前激活 Chat 客户端 (OpenAI 或 Anthropic). 无激活配置时抛 RuntimeError.
+
+        cfg 只读一次 (快照), 贯穿传递到 _get_chat_client — 保证此次请求
+        model_name 和 client endpoint 一致。调用方可传入已验证的 cfg 快照
+        (避免重复读 chat_config); 不传时内部从 self._chat_config 取。
+        热切换瞬间进行中的请求可能用旧 config, 下一个请求自动取新 config (最终一致性).
         """
-        cfg = self._chat_config
+        if cfg is None:
+            cfg = self._chat_config
         if cfg is None:
             raise RuntimeError(
                 "无激活的 Chat 模型配置，请前往「模型管理」页面添加并激活 CHAT 类型配置。"
             )
-        proto = cfg.get("protocol", "openai")
-        if proto == "anthropic":
-            return self._chat_anthropic(cfg, messages, temperature, max_tokens)
-        client = self._get_chat_client(cfg)
-        resp = client.chat.completions.create(
-            model=cfg["model_name"],
-            messages=messages,  # type: ignore[arg-type]
-            temperature=temperature if temperature is not None else cfg.get("temperature", 0.1),
-            max_tokens=max_tokens if max_tokens is not None else cfg.get("max_tokens", 2000),
-        )
-        return resp.choices[0].message.content or ""
+        return self._get_chat_client(cfg)
 
-    def _chat_anthropic(
-        self,
-        cfg: dict[str, Any],
-        messages: list[dict[str, str]],
-        temperature: float | None,
-        max_tokens: int | None,
-    ) -> str:
-        """使用 Anthropic Messages API 发起对话."""
-        client = self._get_chat_client(cfg)
-        # 分离 system 消息与 user/assistant 消息
-        system_parts = [m["content"] for m in messages if m.get("role") == "system"]
-        non_system = [m for m in messages if m.get("role") != "system"]
-        kwargs: dict[str, Any] = {
-            "model": cfg["model_name"],
-            "messages": non_system,  # type: ignore[arg-type]
-            "max_tokens": max_tokens if max_tokens is not None else cfg.get("max_tokens", 2000),
-        }
-        if system_parts:
-            kwargs["system"] = "\n".join(system_parts)
-        t = temperature if temperature is not None else cfg.get("temperature", 0.1)
-        if t is not None:
-            kwargs["temperature"] = t
-        resp = client.messages.create(**kwargs)
-        content = resp.content
-        if content and hasattr(content[0], "text"):
-            return content[0].text or ""
-        return ""
-
-    def _get_chat_client(self, cfg: dict[str, Any]) -> Any:
-        """懒加载并缓存 Chat 客户端（线程安全）.
-
-        protocol='anthropic' → anthropic.Anthropic
-        protocol='openai'    → openai.OpenAI
-
-        Fix-C: 锁内重读 self._chat_config 而非使用调用方传入的 cfg，
-               避免热切换竞态导致用旧 config 构建新 client。
-        Fix-A: 构建 base_url 时应用 completions_path 覆盖。
-        """
-        if self._chat_client is None:
-            with self._lock:
-                if self._chat_client is None:
-                    # 重读以获取最新配置（防止热切换竞态）
-                    live = self._chat_config
-                    if live is None:
-                        raise RuntimeError(
-                            "无激活的 Chat 模型配置，"
-                            "请前往「模型管理」页面添加并激活 CHAT 类型配置。"
-                        )
-                    proto = live.get("protocol", "openai")
-                    if proto == "anthropic":
-                        import anthropic
-                        self._chat_client = anthropic.Anthropic(
-                            api_key=live["api_key"],
-                            base_url=live["base_url"],
-                        )
-                    else:
-                        from openai import OpenAI
-                        # 应用 completions_path（非默认路径则拼接到 base_url）
-                        base_url = live["base_url"]
-                        path = live.get("completions_path") or ""
-                        if path and path != "/v1/chat/completions":
-                            base_url = base_url.rstrip("/") + path
-                        self._chat_client = OpenAI(
-                            api_key=live["api_key"],
-                            base_url=base_url,
-                        )
-        return self._chat_client
-
-    # ── Embedding 调用 ────────────────────────────────────────
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        """使用激活的 Embedding 模型将文本列表向量化.
-
-        返回与输入等长的向量列表（每个向量是 float 列表）。
-        若无激活配置，抛 RuntimeError。
-        按 _BATCH_SIZE 分批调用，与 embedding.py 保持一致。
-        """
-        cfg = self._embedding_config
+    def get_embedding_client(self, cfg: dict[str, Any] | None = None) -> Any:
+        """返回当前激活 Embedding 客户端 (OpenAI). 无激活配置时抛 RuntimeError."""
+        if cfg is None:
+            cfg = self._embedding_config
         if cfg is None:
             raise RuntimeError(
                 "无激活的 Embedding 模型配置，请前往「模型管理」页面添加并激活 EMBEDDING 类型配置。"
             )
-        if cfg.get("protocol", "openai") == "anthropic":
-            raise RuntimeError("Anthropic 协议不支持 Embedding 调用")
-        if not texts:
-            return []
+        return self._get_embedding_client(cfg)
 
-        client = self._get_embedding_client(cfg)
-        vectors: list[list[float]] = []
-        for start in range(0, len(texts), _BATCH_SIZE):
-            batch = texts[start: start + _BATCH_SIZE]
-            resp = client.embeddings.create(
-                model=cfg["model_name"],
-                input=batch,
-                encoding_format="float",
-            )
-            ordered = sorted(resp.data, key=lambda d: d.index)
-            vectors.extend(item.embedding for item in ordered)
-        return vectors
+    def _get_chat_client(self, cfg: dict[str, Any]) -> Any:
+        """懒加载并缓存 Chat 客户端 (线程安全, 单槽 cfg-keyed cache).
+
+        相同 cfg_key=(protocol,api_key,base_url) → 复用已缓存 client;
+        cfg_key 变化 → 驱逐旧 client 重建。单槽够用——同一时刻只有一个激活
+        CHAT 配置; 换 cfg 时 refresh_chat 已清缓存, 不会有两个 cfg 并发争槽。
+        """
+        cfg_key = (cfg.get("protocol", "openai"),
+                    cfg.get("api_key"), cfg.get("base_url"))
+        if self._chat_client is not None and self._chat_client_key == cfg_key:
+            return self._chat_client
+
+        with self._lock:
+            if self._chat_client is not None and self._chat_client_key == cfg_key:
+                return self._chat_client
+            from app.engine.llm_client_factory import build_anthropic_client, build_openai_client
+            proxy_url = _build_proxy_url(cfg)
+            proto = cfg.get("protocol", "openai")
+            if proto == "anthropic":
+                self._chat_client = build_anthropic_client(
+                    cfg["api_key"], cfg["base_url"], timeout=_CLIENT_TIMEOUT, proxy_url=proxy_url)
+            else:
+                base_url = cfg["base_url"]
+                path = cfg.get("completions_path") or ""
+                if path and path != "/v1/chat/completions":
+                    base_url = base_url.rstrip("/") + path
+                self._chat_client = build_openai_client(
+                    cfg["api_key"], base_url, timeout=_CLIENT_TIMEOUT, proxy_url=proxy_url)
+            self._chat_client_key = cfg_key
+        return self._chat_client
+
 
     def _get_embedding_client(self, cfg: dict[str, Any]) -> Any:
-        """懒加载并缓存 Embedding OpenAI 客户端（线程安全）.
+        """懒加载并缓存 Embedding OpenAI 客户端 (线程安全, 单槽 cfg-keyed cache).
 
-        Fix-C: 锁内重读 self._embedding_config。
-        Fix-A: 构建 base_url 时应用 embeddings_path 覆盖。
+        相同 cfg_key=(api_key,base_url) → 复用已缓存 client;
+        cfg_key 变化 → 驱逐旧 client 重建。单槽够用——Embedding 不支持热切换,
+        启动后 cfg_key 不变。
         """
-        if self._embedding_client is None:
-            with self._lock:
-                if self._embedding_client is None:
-                    live = self._embedding_config
-                    if live is None:
-                        raise RuntimeError(
-                            "无激活的 Embedding 模型配置，"
-                            "请前往「模型管理」页面添加并激活 EMBEDDING 类型配置。"
-                        )
-                    from openai import OpenAI
-                    # 应用 embeddings_path（非默认路径则拼接到 base_url）
-                    base_url = live["base_url"]
-                    path = live.get("embeddings_path") or ""
-                    if path and path != "/v1/embeddings":
-                        base_url = base_url.rstrip("/") + path
-                    self._embedding_client = OpenAI(
-                        api_key=live["api_key"],
-                        base_url=base_url,
-                    )
+        cfg_key = (cfg.get("api_key"), cfg.get("base_url"))
+        if self._embedding_client is not None and self._embedding_client_key == cfg_key:
+            return self._embedding_client
+
+        with self._lock:
+            if self._embedding_client is not None and self._embedding_client_key == cfg_key:
+                return self._embedding_client
+            from app.engine.llm_client_factory import build_openai_client
+            base_url = cfg["base_url"]
+            path = cfg.get("embeddings_path") or ""
+            if path and path != "/v1/embeddings":
+                base_url = base_url.rstrip("/") + path
+            proxy_url = _build_proxy_url(cfg)
+            self._embedding_client = build_openai_client(
+                cfg["api_key"], base_url, timeout=_CLIENT_TIMEOUT, proxy_url=proxy_url)
+            self._embedding_client_key = cfg_key
         return self._embedding_client
 
     # ── 启动时从 DB 恢复激活配置 ──────────────────────────────
@@ -243,8 +198,8 @@ class ModelRegistry:
     async def load_from_db(self) -> None:
         """应用启动时调用，从 DB 恢复激活配置到内存（重启后热切换状态不丢失）.
 
-        只加载 model_configs 中 is_active=True 的记录；
-        DB 中无 active config 时不报错、不 fallback env，registry 保持未就绪状态。
+        DB 中无 active config 时不报错，registry 保持未就绪状态。
+        管理员通过 Web UI 添加并激活首个模型配置后，即时生效无需重启。
         """
         try:
             from sqlalchemy import select
@@ -287,10 +242,16 @@ class ModelRegistry:
             "model_type": row.model_type,
             "protocol": row.protocol,
             "temperature": float(row.temperature) if row.temperature is not None else 0.1,
-            "max_tokens": row.max_tokens or 2000,
+            "max_tokens": row.max_tokens or MAX_TOKENS_DEFAULT,
             "completions_path": row.completions_path,
             "embeddings_path": row.embeddings_path,
+            "proxy_enabled": row.proxy_enabled,
+            "proxy_host": row.proxy_host,
+            "proxy_port": row.proxy_port,
+            "proxy_username": row.proxy_username,
+            "proxy_password": row.proxy_password,
         }
+
 
 
 # ── 进程级单例 ────────────────────────────────────────────────

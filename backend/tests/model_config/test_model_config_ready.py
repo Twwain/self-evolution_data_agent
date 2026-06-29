@@ -35,17 +35,3 @@ async def test_check_ready_chat_true_after_active_chat(make_client, db):
     assert data["chat_model_ready"] is True
     assert data["embedding_model_ready"] is False
     assert data["ready"] is False
-
-
-@pytest.mark.asyncio
-async def test_registry_chat_completion_raises_when_no_config(model_registry_isolated):
-    """registry 无 active config 时 chat_completion 抛 RuntimeError."""
-    with pytest.raises(RuntimeError, match="无激活的 Chat 模型配置"):
-        model_registry_isolated.chat_completion([{"role": "user", "content": "hello"}])
-
-
-@pytest.mark.asyncio
-async def test_registry_embed_raises_when_no_config(model_registry_isolated):
-    """registry 无 active config 时 embed 抛 RuntimeError."""
-    with pytest.raises(RuntimeError, match="无激活的 Embedding 模型配置"):
-        model_registry_isolated.embed(["test text"])

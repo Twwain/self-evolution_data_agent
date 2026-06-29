@@ -1,7 +1,7 @@
 /**
  * ModelForm 纯逻辑工具函数 — 独立于 React 组件，便于单元测试。
  */
-import type { ModelProtocol } from "@/api/modelConfig";
+import type { ModelConfig, ModelProtocol } from "@/api/modelConfig";
 
 /**
  * 根据 provider 和用户显式选择推导协议标识。
@@ -35,4 +35,23 @@ export function resolveModelTypeForProvider(
  */
 export function isEmbeddingAllowed(provider: string): boolean {
   return provider !== "anthropic";
+}
+
+/**
+ * 是否存在另一条已激活的 Embedding 配置 (激活互斥前置检查)。
+ */
+export function hasOtherActiveEmbedding(
+  configs: ModelConfig[],
+  targetId: number,
+): boolean {
+  return configs.some(
+    (c) => c.model_type === "EMBEDDING" && c.is_active && c.id !== targetId,
+  );
+}
+
+/**
+ * 已激活的 Embedding 配置是否被锁定 (编辑/删除会破坏知识库索引)。
+ */
+export function isEmbeddingEditLocked(cfg: ModelConfig): boolean {
+  return cfg.model_type === "EMBEDDING" && !!cfg.is_active;
 }

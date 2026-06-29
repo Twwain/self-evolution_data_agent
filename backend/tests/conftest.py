@@ -147,3 +147,4 @@ async def make_client(db):
 async def admin_client(make_client):
     """向后兼容: 默认 super_admin 身份 client (旧测试沿用)。"""
     return await make_client(role="super_admin", user_id=1, username="admin")
+

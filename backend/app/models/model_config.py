@@ -37,7 +37,7 @@ class ModelConfig(Base):
     temperature: Mapped[float | None] = mapped_column(Numeric(4, 2), nullable=True, default=0.0)
     """温度（0-2），仅 CHAT 有效"""
 
-    max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=2000)
+    max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=12288)
     """最大输出 Token，仅 CHAT 有效"""
 
     # ── 路径覆盖（兼容非标准厂商）────────────────────────────

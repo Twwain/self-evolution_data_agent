@@ -46,7 +46,7 @@ const MASK = "****";
 /* ── 初始表单状态 ──────────────────────────── */
 const INIT: Omit<ModelConfig, "id" | "is_active" | "created_at" | "updated_at"> = {
   provider: "", protocol: "openai", base_url: "", api_key: "", model_name: "",
-  model_type: "CHAT", temperature: 0.0, max_tokens: 2000,
+  model_type: "CHAT", temperature: 0.0, max_tokens: 12288,
   completions_path: "", embeddings_path: "",
   proxy_enabled: false, proxy_host: "", proxy_port: undefined, proxy_username: "", proxy_password: "",
 };
@@ -360,12 +360,12 @@ export default function ModelForm({ open, initial, onClose, onSuccess }: Props) 
                     <div className={styles.rowCtrl}>
                       <div className={styles.numGroup}>
                         <button className={styles.stepBtn} type="button"
-                          onClick={() => set("max_tokens", Math.max(1, (form.max_tokens ?? 2000) - 100))}>−</button>
+                          onClick={() => set("max_tokens", Math.max(1, (form.max_tokens ?? 12288) - 100))}>−</button>
                         <input type="number" min={1} className={styles.numInput}
-                          value={form.max_tokens ?? 2000}
-                          onChange={(e) => set("max_tokens", parseInt(e.target.value) || 2000)} />
+                          value={form.max_tokens ?? 12288}
+                          onChange={(e) => set("max_tokens", parseInt(e.target.value) || 12288)} />
                         <button className={styles.stepBtn} type="button"
-                          onClick={() => set("max_tokens", (form.max_tokens ?? 2000) + 100)}>+</button>
+                          onClick={() => set("max_tokens", (form.max_tokens ?? 12288) + 100)}>+</button>
                       </div>
                     </div>
                   </div>

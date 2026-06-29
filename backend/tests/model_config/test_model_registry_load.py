@@ -64,3 +64,33 @@ async def test_load_from_db_isolated_does_not_affect_other_tests(model_registry_
     assert ready["chat_ready"] is True
 
     # fixture teardown 会重置，不影响其他测试（由 fixture 保证）
+
+
+def test_build_proxy_url_disabled_returns_none():
+    from app.engine.model_registry import _build_proxy_url
+    assert _build_proxy_url({"proxy_enabled": False}) is None
+
+
+def test_build_proxy_url_enabled_with_auth():
+    from app.engine.model_registry import _build_proxy_url
+    url = _build_proxy_url({
+        "proxy_enabled": True, "proxy_host": "proxy.example.com", "proxy_port": 8080,
+        "proxy_username": "u", "proxy_password": "p",
+    })
+    assert url == "http://u:p@proxy.example.com:8080"
+
+
+def test_get_chat_client_uses_factory_not_direct_construction():
+    """registry 不得直接 OpenAI()/Anthropic(), 必须走 llm 工厂."""
+    from unittest.mock import patch
+
+    from app.engine.model_registry import ModelRegistry
+    registry = ModelRegistry()
+    registry.refresh_chat({
+        "protocol": "openai", "api_key": "k", "base_url": "https://x/v1",
+        "model_name": "m", "proxy_enabled": False,
+    })
+    with patch("app.engine.llm_client_factory.build_openai_client") as mock_fac:
+        registry._get_chat_client({"protocol": "openai", "api_key": "k",
+                                   "base_url": "https://x/v1", "model_name": "m"})
+        mock_fac.assert_called_once()

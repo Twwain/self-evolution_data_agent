@@ -20,7 +20,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 import anthropic
 import openai
@@ -54,53 +54,54 @@ def _sanitize_tool_use_id(raw_id: str) -> str:
     return _TOOL_ID_UNSAFE.sub("_", raw_id)
 
 
-# ── 懒初始化的客户端单例 ──
-_openai_client: OpenAI | None = None
-_claude_client: anthropic.Anthropic | None = None
+# ── 客户端构造 ──
+# cfg 参数: 由公开入口读一次后传入全链, 禁止内部独立读 registry.chat_config.
+# 不传 cfg 时从 registry 取 (向后兼容, 仅旧调用路径用).
 
 
-def _get_openai_client() -> OpenAI:
-    global _openai_client
-    if _openai_client is None:
-        _openai_client = OpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url)
-    return _openai_client
-
-
-def _get_claude_client() -> anthropic.Anthropic:
-    global _claude_client
-    if _claude_client is None:
-        _claude_client = anthropic.Anthropic(
-            api_key=settings.claude_api_key,
-            base_url=settings.claude_base_url,
+def _get_openai_client(cfg: dict[str, Any] | None = None) -> OpenAI:
+    """返回 OpenAI 兼容客户端 (从 registry 激活配置构造, 热切换自动重建)."""
+    if cfg is None:
+        from app.engine.model_registry import registry
+        cfg = registry.chat_config
+    if cfg is None or cfg.get("protocol", "openai") != "openai":
+        raise RuntimeError(
+            "无激活的 openai Chat 配置，请前往「模型管理」页面添加并激活 CHAT 类型配置。"
         )
-    return _claude_client
+    client = registry.get_chat_client(cfg)
+    return client  # type: ignore[return-value]
+
+
+def _get_claude_client(cfg: dict[str, Any] | None = None) -> anthropic.Anthropic:
+    """返回 Anthropic 客户端 (从 registry 激活配置构造, 热切换自动重建)."""
+    if cfg is None:
+        from app.engine.model_registry import registry
+        cfg = registry.chat_config
+    if cfg is None or cfg.get("protocol") != "anthropic":
+        raise RuntimeError(
+            "无激活的 anthropic Chat 配置，请前往「模型管理」页面添加并激活 CHAT 类型配置。"
+        )
+    client = registry.get_chat_client(cfg)
+    return client  # type: ignore[return-value]
+
+
+# ── 客户端工厂 re-export (真实定义在 llm_client_factory.py, 消除循环依赖) ──
+
+from app.engine.llm_client_factory import build_anthropic_client, build_openai_client  # noqa: E402
 
 
 def build_chat_client(
-    api_key: str,
-    base_url: str,
-    protocol: str = "openai",
-    *,
-    timeout: float = 15,
+    api_key: str, base_url: str, protocol: str = "openai", *,
+    timeout: float = 15, proxy_url: str | None = None,
 ) -> "OpenAI | anthropic.Anthropic":
-    """临时 LLM 客户端工厂（不缓存，不读 settings，用于连接测试等一次性场景）.
+    """临时 LLM 客户端工厂 (不缓存, 不读 settings, 用于连接测试等一次性场景).
 
-    Args:
-        api_key:  API 密钥（明文，已由调用方解密）。
-        base_url: API 基础地址。
-        protocol: ``"openai"`` 或 ``"anthropic"``。
-        timeout:  HTTP 超时秒数，默认 15 s。
-
-    Returns:
-        openai.OpenAI 或 anthropic.Anthropic 实例，未缓存。
+    分派到 build_openai_client / build_anthropic_client; 返回 union, 调用方需
+    按 protocol 自行 narrow, 或直接调具体工厂拿确定类型。
     """
     if protocol == "anthropic":
-        return anthropic.Anthropic(
-            api_key=api_key,
-            base_url=base_url,
-            timeout=timeout,
-        )
-    return OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        return build_anthropic_client(api_key, base_url, timeout=timeout, proxy_url=proxy_url)
+    return build_openai_client(api_key, base_url, timeout=timeout, proxy_url=proxy_url)
 
 
 # ════════════════════════════════════════════
@@ -199,8 +200,8 @@ def _is_transient_llm_error(exc: BaseException) -> bool:
 @observe(as_type="generation", name="chat_completion", capture_input=False, capture_output=False)
 def chat_completion(
     messages: list[dict],
-    temperature: float = 0.1,
-    max_tokens: int = 12288,  # noqa: hardcode
+    temperature: float | None = None,
+    max_tokens: int | None = None,
     provider: str | None = None,
     extra_body: dict | None = None,
 ) -> str:
@@ -214,11 +215,16 @@ def chat_completion(
         {"thinking": {"type": "disabled"}} 关闭思考模式). 仅 openai 路径透传,
         anthropic 路径忽略 (Claude 思考默认关闭, 由 thinking 参数单独控制).
     """
-    provider = provider or settings.llm_provider
-
+    from app.engine.model_registry import registry
+    cfg = registry.chat_config
+    if cfg is None:
+        raise RuntimeError(
+            "无激活的 Chat 模型配置，请前往「模型管理」页面添加并激活 CHAT 类型配置。"
+        )
+    provider = provider or cfg["protocol"]
     if provider == "anthropic":
-        return _claude_chat_with_retry(messages, temperature, max_tokens)
-    return _openai_chat_with_retry(messages, temperature, max_tokens, extra_body=extra_body)
+        return _claude_chat_with_retry(messages, cfg, temperature, max_tokens)
+    return _openai_chat_with_retry(messages, cfg, temperature, max_tokens, extra_body=extra_body)
 
 
 # ════════════════════════════════════════════
@@ -226,14 +232,18 @@ def chat_completion(
 #  (DashScope / DeepSeek / vLLM / 官方 OpenAI 等任意兼容端点)
 # ════════════════════════════════════════════
 
-def _openai_chat(messages: list[dict], temperature: float, max_tokens: int,
+def _openai_chat(messages: list[dict], cfg: dict[str, Any],
+                 temperature: float | None = None, max_tokens: int | None = None,
                  extra_body: dict | None = None) -> str:
-    client = _get_openai_client()
+    client = _get_openai_client(cfg)
+    model = cfg["model_name"]
+    temp = temperature if temperature is not None else cfg.get("temperature", 0.1)
+    mt = max_tokens if max_tokens is not None else cfg.get("max_tokens", 12288)
     resp = client.chat.completions.create(
-        model=settings.llm_model,
+        model=model,
         messages=messages,  # type: ignore[arg-type]
-        temperature=temperature,
-        max_tokens=max_tokens,
+        temperature=temp,
+        max_tokens=mt,
         extra_body=extra_body,
     )
     text = resp.choices[0].message.content or ""
@@ -241,29 +251,30 @@ def _openai_chat(messages: list[dict], temperature: float, max_tokens: int,
     if not text.strip():
         # Record to Langfuse BEFORE raising — preserves input for diagnostics
         _record_generation(
-            model=settings.llm_model, messages=messages, output="[EMPTY_RESPONSE]",
+            model=model, messages=messages, output="[EMPTY_RESPONSE]",
             input_tokens=getattr(usage, "prompt_tokens", None),
             output_tokens=getattr(usage, "completion_tokens", None),
         )
         raise EmptyLLMResponseError(
-            f"OpenAI-compatible endpoint returned empty content (model={settings.llm_model}, "
+            f"OpenAI-compatible endpoint returned empty content (model={model}, "
             f"finish_reason={resp.choices[0].finish_reason})"
         )
     _record_generation(
-        model=settings.llm_model, messages=messages, output=text,
+        model=model, messages=messages, output=text,
         input_tokens=getattr(usage, "prompt_tokens", None),
         output_tokens=getattr(usage, "completion_tokens", None),
     )
     return text
 
 
-def _openai_chat_with_retry(messages: list[dict], temperature: float, max_tokens: int,
+def _openai_chat_with_retry(messages: list[dict], cfg: dict[str, Any],
+                            temperature: float | None = None, max_tokens: int | None = None,
                             extra_body: dict | None = None) -> str:
     """OpenAI-compatible chat + transient-error retry (指数退避, 上限 llm_retry_max)."""
     last_exc: BaseException | None = None
     for attempt in range(settings.llm_retry_max + 1):
         try:
-            return _openai_chat(messages, temperature, max_tokens, extra_body=extra_body)
+            return _openai_chat(messages, cfg, temperature, max_tokens, extra_body=extra_body)
         except Exception as e:
             if not _is_transient_llm_error(e) or attempt == settings.llm_retry_max:
                 raise
@@ -302,8 +313,12 @@ def _block_types(content) -> list[str]:
 #  核心差异: system 不在 messages 里, 是独立参数
 # ════════════════════════════════════════════
 
-def _claude_chat(messages: list[dict], temperature: float, max_tokens: int) -> str:
-    client = _get_claude_client()
+def _claude_chat(messages: list[dict], cfg: dict[str, Any],
+                 temperature: float | None = None, max_tokens: int | None = None) -> str:
+    client = _get_claude_client(cfg)
+    model = cfg["model_name"]
+    temp = temperature if temperature is not None else cfg.get("temperature", 0.1)
+    mt = max_tokens if max_tokens is not None else cfg.get("max_tokens", 12288)
 
     # 提取 system message (Claude API 要求独立传)
     system_text = ""
@@ -322,17 +337,17 @@ def _claude_chat(messages: list[dict], temperature: float, max_tokens: int) -> s
     # 大 max_tokens 必须走流式, 否则 SDK 预估超 10min 会直接拒绝
     # SDK 公式: expected_time = 3600 × max_tokens / 128000, > 600s 即 raise
     # 解出真实临界 21333, 留 buffer 取 21000
-    if max_tokens > 21000:
+    if mt > 21000:
         text_parts: list[str] = []
         input_tokens: int | None = None
         output_tokens: int | None = None
         final = None
         with client.messages.stream(
-            model=settings.claude_model,
+            model=model,
             system=system_param,  # type: ignore[arg-type]
             messages=user_messages,  # type: ignore[arg-type]
-            temperature=temperature,
-            max_tokens=max_tokens,
+            temperature=temp,
+            max_tokens=mt,
         ) as stream:
             for text in stream.text_stream:
                 text_parts.append(text)
@@ -357,7 +372,7 @@ def _claude_chat(messages: list[dict], temperature: float, max_tokens: int) -> s
             )
             logger.warning("Claude 流式返回空文本: %s", diag)
             _record_generation(
-                model=settings.claude_model, messages=messages, output=diag,
+                model=model, messages=messages, output=diag,
                 input_tokens=input_tokens, output_tokens=output_tokens,
             )
             raise EmptyLLMResponseError(
@@ -365,18 +380,18 @@ def _claude_chat(messages: list[dict], temperature: float, max_tokens: int) -> s
                 f"out_tok={output_tokens}"
             )
         _record_generation(
-            model=settings.claude_model, messages=messages, output=result,
+            model=model, messages=messages, output=result,
             input_tokens=input_tokens, output_tokens=output_tokens,
         )
         return result
 
     # ── 首次: 不干预 thinking, 接受任意 block 组合 ──
     resp = client.messages.create(
-        model=settings.claude_model,
+        model=model,
         system=system_param,  # type: ignore[arg-type]
         messages=user_messages,  # type: ignore[arg-type]
-        temperature=temperature,
-        max_tokens=max_tokens,
+        temperature=temp,
+        max_tokens=mt,
     )
     text = _extract_claude_text(resp.content)
 
@@ -388,11 +403,11 @@ def _claude_chat(messages: list[dict], temperature: float, max_tokens: int) -> s
             "Claude 首次空文本 blocks=%s stop=%s — 原参数重试", blocks1, stop1,
         )
         resp = client.messages.create(
-            model=settings.claude_model,
+            model=model,
             system=system_param,  # type: ignore[arg-type]
             messages=user_messages,  # type: ignore[arg-type]
-            temperature=temperature,
-            max_tokens=max_tokens,
+            temperature=temp,
+            max_tokens=mt,
         )
         text = _extract_claude_text(resp.content)
         if not text:
@@ -403,7 +418,7 @@ def _claude_chat(messages: list[dict], temperature: float, max_tokens: int) -> s
                 f"retry=(blocks={blocks2},stop={stop2})"
             )
             _record_generation(
-                model=settings.claude_model, messages=messages, output=diag,
+                model=model, messages=messages, output=diag,
                 input_tokens=resp.usage.input_tokens if resp.usage else None,
                 output_tokens=resp.usage.output_tokens if resp.usage else None,
             )
@@ -414,19 +429,22 @@ def _claude_chat(messages: list[dict], temperature: float, max_tokens: int) -> s
             )
 
     _record_generation(
-        model=settings.claude_model, messages=messages, output=text,
+        model=model, messages=messages, output=text,
         input_tokens=resp.usage.input_tokens if resp.usage else None,
         output_tokens=resp.usage.output_tokens if resp.usage else None,
     )
     return text
 
 
-def _claude_chat_with_retry(messages: list[dict], temperature: float, max_tokens: int) -> str:
+def _claude_chat_with_retry(
+    messages: list[dict], cfg: dict[str, Any],
+    temperature: float | None = None, max_tokens: int | None = None,
+) -> str:
     """Claude chat with transient-error retry (指数退避, 最多 settings.llm_retry_max 次重试)."""
     last_exc: BaseException | None = None
     for attempt in range(settings.llm_retry_max + 1):
         try:
-            return _claude_chat(messages, temperature, max_tokens)
+            return _claude_chat(messages, cfg, temperature, max_tokens)
         except Exception as e:
             if not _is_transient_llm_error(e) or attempt == settings.llm_retry_max:
                 raise
@@ -461,8 +479,8 @@ class LLMResponse:
 )
 def chat_completion_checked(
     messages: list[dict],
-    temperature: float = 0.1,
-    max_tokens: int = 12288,  # noqa: hardcode
+    temperature: float | None = None,
+    max_tokens: int | None = None,
     provider: str | None = None,
     extra_body: dict | None = None,
 ) -> LLMResponse:
@@ -471,38 +489,55 @@ def chat_completion_checked(
     extra_body: 仅 openai 路径透传 (如 DeepSeek 的 {"thinking": {"type": "disabled"}}),
         anthropic 路径忽略 (Claude 思考默认关闭).
     """
-    provider = provider or settings.llm_provider
+    from app.engine.model_registry import registry
+
+    cfg = registry.chat_config
+    if cfg is None:
+        raise RuntimeError(
+            "无激活的 Chat 模型配置，请前往「模型管理」页面添加并激活 CHAT 类型配置。"
+        )
+    provider = provider or cfg["protocol"]
 
     if provider == "anthropic":
-        return _claude_chat_checked(messages, temperature, max_tokens)
-    return _openai_chat_checked(messages, temperature, max_tokens, extra_body=extra_body)
+        return _claude_chat_checked(messages, cfg, temperature, max_tokens)
+    return _openai_chat_checked(messages, cfg, temperature, max_tokens, extra_body=extra_body)
 
 
 def _openai_chat_checked(
-    messages: list[dict], temperature: float, max_tokens: int,
+    messages: list[dict], cfg: dict[str, Any],
+    temperature: float | None = None, max_tokens: int | None = None,
     extra_body: dict | None = None,
 ) -> LLMResponse:
-    client = _get_openai_client()
+    client = _get_openai_client(cfg)
+    model = cfg["model_name"]
+    temp = temperature if temperature is not None else cfg.get("temperature", 0.1)
+    mt = max_tokens if max_tokens is not None else cfg.get("max_tokens", 12288)
     resp = client.chat.completions.create(
-        model=settings.llm_model,
+        model=model,
         messages=messages,  # type: ignore[arg-type]
-        temperature=temperature,
-        max_tokens=max_tokens,
+        temperature=temp,
+        max_tokens=mt,
         extra_body=extra_body,
     )
     truncated = resp.choices[0].finish_reason == "length"
     text = resp.choices[0].message.content or ""
     usage = getattr(resp, "usage", None)
     _record_generation(
-        model=settings.llm_model, messages=messages, output=text,
+        model=model, messages=messages, output=text,
         input_tokens=getattr(usage, "prompt_tokens", None),
         output_tokens=getattr(usage, "completion_tokens", None),
     )
     return LLMResponse(text, truncated)
 
 
-def _claude_chat_checked(messages: list[dict], temperature: float, max_tokens: int) -> LLMResponse:
-    client = _get_claude_client()
+def _claude_chat_checked(
+    messages: list[dict], cfg: dict[str, Any],
+    temperature: float | None = None, max_tokens: int | None = None,
+) -> LLMResponse:
+    client = _get_claude_client(cfg)
+    model = cfg["model_name"]
+    temp = temperature if temperature is not None else cfg.get("temperature", 0.1)
+    mt = max_tokens if max_tokens is not None else cfg.get("max_tokens", 12288)
 
     system_text = ""
     user_messages = []
@@ -518,11 +553,11 @@ def _claude_chat_checked(messages: list[dict], temperature: float, max_tokens: i
 
     # ── 首次: 不干预 thinking ──
     resp = client.messages.create(
-        model=settings.claude_model,
+        model=model,
         system=system_param,  # type: ignore[arg-type]
         messages=user_messages,  # type: ignore[arg-type]
-        temperature=temperature,
-        max_tokens=max_tokens,
+        temperature=temp,
+        max_tokens=mt,
     )
     text = _extract_claude_text(resp.content)
 
@@ -534,11 +569,11 @@ def _claude_chat_checked(messages: list[dict], temperature: float, max_tokens: i
             "Claude checked 首次空文本 blocks=%s stop=%s — 原参数重试", blocks1, stop1,
         )
         resp = client.messages.create(
-            model=settings.claude_model,
+            model=model,
             system=system_param,  # type: ignore[arg-type]
             messages=user_messages,  # type: ignore[arg-type]
-            temperature=temperature,
-            max_tokens=max_tokens,
+            temperature=temp,
+            max_tokens=mt,
         )
         text = _extract_claude_text(resp.content)
         if not text:
@@ -549,7 +584,7 @@ def _claude_chat_checked(messages: list[dict], temperature: float, max_tokens: i
                 f"retry=(blocks={blocks2},stop={stop2})"
             )
             _record_generation(
-                model=settings.claude_model, messages=messages, output=diag,
+                model=model, messages=messages, output=diag,
                 input_tokens=resp.usage.input_tokens if resp.usage else None,
                 output_tokens=resp.usage.output_tokens if resp.usage else None,
             )
@@ -561,7 +596,7 @@ def _claude_chat_checked(messages: list[dict], temperature: float, max_tokens: i
 
     truncated = resp.stop_reason == "max_tokens"
     _record_generation(
-        model=settings.claude_model, messages=messages, output=text,
+        model=model, messages=messages, output=text,
         input_tokens=resp.usage.input_tokens if resp.usage else None,
         output_tokens=resp.usage.output_tokens if resp.usage else None,
     )
@@ -601,8 +636,8 @@ async def chat_completion_with_tools(
     tools: list[dict],
     provider: str | None = None,
     stream_callback: Callable[[dict], Awaitable[None]] | None = None,
-    temperature: float = 0.1,
-    max_tokens: int = 12288,  # noqa: hardcode
+    temperature: float | None = None,
+    max_tokens: int | None = None,
     extra_body: dict | None = None,
 ) -> ToolUseResponse:
     """统一 tool_use 入口.
@@ -618,14 +653,20 @@ async def chat_completion_with_tools(
     extra_body: 仅 openai 路径透传 (如 DeepSeek 的 {"thinking": {"type": "disabled"}}),
         anthropic 路径忽略 (Claude 思考默认关闭).
     """
-    provider = provider or settings.llm_provider
+    from app.engine.model_registry import registry
+    cfg = registry.chat_config
+    if cfg is None:
+        raise RuntimeError(
+            "无激活的 Chat 模型配置，请前往「模型管理」页面添加并激活 CHAT 类型配置。"
+        )
+    provider = provider or cfg["protocol"]
     if provider == "anthropic":
         resp = await asyncio.to_thread(
-            _claude_tool_use, messages, tools, temperature, max_tokens,
+            _claude_tool_use, messages, tools, cfg, temperature, max_tokens,
         )
     else:
         resp = await asyncio.to_thread(
-            _openai_tool_use, messages, tools, temperature, max_tokens,
+            _openai_tool_use, messages, tools, cfg, temperature, max_tokens,
             extra_body=extra_body,
         )
     _coerce_tool_call_args(resp.tool_calls, tools)
@@ -669,10 +710,14 @@ def _to_openai_messages(messages: list[dict]) -> list[dict]:
 
 def _openai_tool_use(
     messages: list[dict], tools: list[dict],
-    temperature: float, max_tokens: int,
+    cfg: dict[str, Any],
+    temperature: float | None = None, max_tokens: int | None = None,
     extra_body: dict | None = None,
 ) -> ToolUseResponse:
-    client = _get_openai_client()
+    client = _get_openai_client(cfg)
+    model = cfg["model_name"]
+    temp = temperature if temperature is not None else cfg.get("temperature", 0.1)
+    mt = max_tokens if max_tokens is not None else cfg.get("max_tokens", 12288)
     openai_tools = [
         {
             "type": "function",
@@ -685,11 +730,11 @@ def _openai_tool_use(
         for t in tools
     ]
     resp = client.chat.completions.create(
-        model=settings.llm_model,
+        model=model,
         messages=_to_openai_messages(messages),  # type: ignore[arg-type]
         tools=openai_tools,  # type: ignore[arg-type]
-        temperature=temperature,
-        max_tokens=max_tokens,
+        temperature=temp,
+        max_tokens=mt,
         extra_body=extra_body,
     )
     choice = resp.choices[0]
@@ -712,7 +757,7 @@ def _openai_tool_use(
         "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
     }
     _record_generation(
-        model=settings.llm_model, messages=messages,
+        model=model, messages=messages,
         output={"text": text, "tool_calls": [tc.__dict__ for tc in tool_calls]},
         input_tokens=usage_dict["input_tokens"], output_tokens=usage_dict["output_tokens"],
         tools=openai_tools,
@@ -729,9 +774,13 @@ def _openai_tool_use(
 
 def _claude_tool_use(
     messages: list[dict], tools: list[dict],
-    temperature: float, max_tokens: int,
+    cfg: dict[str, Any],
+    temperature: float | None = None, max_tokens: int | None = None,
 ) -> ToolUseResponse:
-    client = _get_claude_client()
+    client = _get_claude_client(cfg)
+    model = cfg["model_name"]
+    temp = temperature if temperature is not None else cfg.get("temperature", 0.1)
+    mt = max_tokens if max_tokens is not None else cfg.get("max_tokens", 12288)
 
     system_text = ""
     user_messages: list[dict] = []
@@ -805,12 +854,12 @@ def _claude_tool_use(
     ]
 
     resp = client.messages.create(
-        model=settings.claude_model,
+        model=model,
         system=system_param,  # type: ignore[arg-type]
         messages=user_messages,  # type: ignore[arg-type]
         tools=claude_tools,  # type: ignore[arg-type]
-        temperature=temperature,
-        max_tokens=max_tokens,
+        temperature=temp,
+        max_tokens=mt,
     )
 
     text_parts: list[str] = []
@@ -833,7 +882,7 @@ def _claude_tool_use(
         "output_tokens": resp.usage.output_tokens if resp.usage else 0,
     }
     _record_generation(
-        model=settings.claude_model, messages=messages,
+        model=model, messages=messages,
         output={"text": text, "tool_calls": [tc.__dict__ for tc in tool_calls]},
         input_tokens=usage_dict["input_tokens"], output_tokens=usage_dict["output_tokens"],
         tools=claude_tools,

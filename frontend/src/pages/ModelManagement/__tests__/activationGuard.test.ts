@@ -4,20 +4,7 @@
  */
 import { describe, it, expect } from "vitest";
 import type { ModelConfig } from "@/api/modelConfig";
-
-// ── 提取 index.tsx 中的核心检查逻辑 ──────────────────────────
-function hasOtherActiveEmbedding(
-  configs: ModelConfig[],
-  targetId: number,
-): boolean {
-  return configs.some(
-    (c) => c.model_type === "EMBEDDING" && c.is_active && c.id !== targetId,
-  );
-}
-
-function isEmbeddingEditLocked(cfg: ModelConfig): boolean {
-  return cfg.model_type === "EMBEDDING" && !!cfg.is_active;
-}
+import { hasOtherActiveEmbedding, isEmbeddingEditLocked } from "../modelFormUtils";
 
 // ── 测试数据 ──────────────────────────────────────────────────
 const makeConfig = (
@@ -60,14 +47,15 @@ describe("Embedding 激活保护", () => {
     expect(hasOtherActiveEmbedding(configs, 1)).toBe(false);
   });
 
-  it("Chat 配置不受 Embedding 激活保护影响", () => {
+  it("hasOtherActiveEmbedding 对 CHAT 类型目标也正确返回——存在其他 active EMBEDDING 时返回 true", () => {
     const configs = [
-      makeConfig(1, "CHAT", false),     // 目标
-      makeConfig(2, "EMBEDDING", true), // 已激活的 Embedding（不影响 Chat）
+      makeConfig(1, "CHAT", false),
+      makeConfig(2, "EMBEDDING", true),
     ];
-    // Chat 激活不需要检查 Embedding
-    expect(hasOtherActiveEmbedding(configs, 1)).toBe(true); // 检查本身返回 true
-    // 但业务逻辑只对 EMBEDDING 类型做这个检查，所以 Chat 可以正常激活
+    // hasOtherActiveEmbedding 是纯谓词, 不按 model_type 过滤目标 —
+    // 调用方 (activation guard) 先判 model_type==='EMBEDDING' 再调本函数,
+    // 所以 CHAT 调用它返回 true 也无害 (根本走不到)。
+    expect(hasOtherActiveEmbedding(configs, 1)).toBe(true);
   });
 });
 

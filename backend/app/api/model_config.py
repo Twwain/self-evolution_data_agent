@@ -46,7 +46,7 @@ class ModelConfigIn(BaseModel):
     model_type: str = Field("CHAT", pattern=r"^(CHAT|EMBEDDING)$")
     protocol: str = Field("openai", pattern=r"^(openai|anthropic)$")
     temperature: float | None = 0.0
-    max_tokens: int | None = 2000
+    max_tokens: int | None = 12288
     completions_path: str | None = None
     embeddings_path: str | None = None
     proxy_enabled: bool = False
@@ -440,9 +440,10 @@ async def test_connection(
         "model_type": body.model_type,
         "protocol": proto,
         "temperature": body.temperature or 0.0,
-        "max_tokens": body.max_tokens or 2000,
+        "max_tokens": body.max_tokens or 12288,
         "completions_path": body.completions_path,
         "embeddings_path": body.embeddings_path,
+        "proxy_url": _build_proxy_url_from_body(body),
     }
     try:
         if body.model_type == "CHAT":
@@ -487,6 +488,19 @@ async def check_ready(
 #  内部工具
 # ══════════════════════════════════════════════════════════════
 
+def _build_proxy_url_from_body(body: ModelConfigTestBody) -> str | None:
+    """从请求体构造代理 URL — 委托 registry._build_proxy_url, 单一真相源."""
+    from app.engine.model_registry import _build_proxy_url
+
+    return _build_proxy_url({
+        "proxy_enabled": body.proxy_enabled,
+        "proxy_host": body.proxy_host,
+        "proxy_port": body.proxy_port,
+        "proxy_username": body.proxy_username,
+        "proxy_password": body.proxy_password,
+    })
+
+
 def _friendly_error(raw: str) -> str:
     """将原始异常信息映射为友好提示."""
     raw_lower = raw.lower()
@@ -502,13 +516,13 @@ def _friendly_error(raw: str) -> str:
 
 
 def _test_openai_chat(cfg: dict[str, Any]) -> None:
-    """发送 Hello 测试 OpenAI 兼容 Chat 连接，失败即抛异常."""
-    from app.engine.llm import build_chat_client
+    """发送 Hello 测试 OpenAI 兼容 Chat 连接, 失败即抛异常."""
+    from app.engine.llm import build_openai_client
     base_url = cfg["base_url"]
     path = cfg.get("completions_path") or "/v1/chat/completions"
     if path != "/v1/chat/completions":
         base_url = base_url.rstrip("/") + path
-    client = build_chat_client(cfg["api_key"], base_url, protocol="openai")
+    client = build_openai_client(cfg["api_key"], base_url, proxy_url=cfg.get("proxy_url"))
     client.chat.completions.create(
         model=cfg["model_name"],
         messages=[{"role": "user", "content": "Hello"}],
@@ -517,9 +531,9 @@ def _test_openai_chat(cfg: dict[str, Any]) -> None:
 
 
 def _test_anthropic_chat(cfg: dict[str, Any]) -> None:
-    """发送 Hello 测试 Anthropic Chat 连接，失败即抛异常."""
-    from app.engine.llm import build_chat_client
-    client = build_chat_client(cfg["api_key"], cfg["base_url"], protocol="anthropic")
+    """发送 Hello 测试 Anthropic Chat 连接, 失败即抛异常."""
+    from app.engine.llm import build_anthropic_client
+    client = build_anthropic_client(cfg["api_key"], cfg["base_url"], proxy_url=cfg.get("proxy_url"))
     client.messages.create(
         model=cfg["model_name"],
         messages=[{"role": "user", "content": "Hello"}],
@@ -528,9 +542,9 @@ def _test_anthropic_chat(cfg: dict[str, Any]) -> None:
 
 
 def _test_openai_embedding(cfg: dict[str, Any]) -> None:
-    """发送 Test 测试 Embedding 连接，失败即抛异常."""
-    from app.engine.llm import build_chat_client
-    client = build_chat_client(cfg["api_key"], cfg["base_url"], protocol="openai")
+    """发送 Test 测试 Embedding 连接, 失败即抛异常."""
+    from app.engine.llm import build_openai_client
+    client = build_openai_client(cfg["api_key"], cfg["base_url"], proxy_url=cfg.get("proxy_url"))
     client.embeddings.create(model=cfg["model_name"], input="Test")
 
 

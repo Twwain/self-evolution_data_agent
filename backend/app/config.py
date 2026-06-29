@@ -14,30 +14,7 @@ _ENV_FILE = str(Path(__file__).resolve().parents[1] / ".env")
 
 
 class Settings(BaseSettings):
-    model_config = {"env_prefix": "IS_", "env_file": _ENV_FILE}
-
-    # ── LLM 提供商 (按线协议而非厂商分轴) ──
-    #   openai    → OpenAI Chat Completions 协议 (DashScope/Qwen, DeepSeek, vLLM, 官方 OpenAI…)
-    #   anthropic → Anthropic Messages 协议 (Claude)
-    llm_provider: str = "openai"  # openai | anthropic
-
-    # ── Qwen (DashScope) ──
-    llm_api_key: str = ""
-    llm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    llm_model: str = "qwen-plus"
-
-    # ── Claude (Anthropic) ──
-    claude_api_key: str = ""
-    claude_model: str = "claude-sonnet-4-20250514"
-    claude_base_url: str = "https://api.anthropic.com"
-
-    # ── Embedding (DashScope, OpenAI-compatible /embeddings endpoint) ──
-    # 独立凭证: Claude 线路无 embedding, Anthropic 官方不提供向量模型.
-    # DashScope 一个 key 同时授权 chat/embedding, 但此处与 LLM key 解耦,
-    # 方便未来替换 embedding 厂商而不影响 LLM 路由.
-    embedding_api_key: str = ""
-    embedding_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    embedding_model: str = "text-embedding-v4"
+    model_config = {"env_prefix": "IS_", "env_file": _ENV_FILE, "extra": "ignore"}
 
     # ── 元数据库 ──
     metadata_db_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/self_evolution_data_agent"

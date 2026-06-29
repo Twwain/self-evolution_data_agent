@@ -414,7 +414,7 @@ async def _ensure_model_configs_table(engine: AsyncEngine) -> None:
         model_name        VARCHAR(128)  NOT NULL,
         model_type        VARCHAR(20)   NOT NULL DEFAULT 'CHAT',
         temperature       NUMERIC(4,2)  NULL DEFAULT 0.00,
-        max_tokens        INTEGER       NULL DEFAULT 2000,
+        max_tokens        INTEGER       NULL DEFAULT 12288,
         completions_path  VARCHAR(256)  NULL,
         embeddings_path   VARCHAR(256)  NULL,
         proxy_enabled     BOOLEAN       NOT NULL DEFAULT FALSE,
@@ -455,11 +455,16 @@ async def _ensure_model_configs_table(engine: AsyncEngine) -> None:
         "ON model_configs (model_type) "
         "WHERE is_active = TRUE AND is_deleted = FALSE"
     )
+    alter_max_tokens_default = (
+        "ALTER TABLE model_configs "
+        "ALTER COLUMN max_tokens SET DEFAULT 12288"
+    )
     async with engine.begin() as conn:
         await conn.execute(text(ddl))
         await conn.execute(text(dedupe_active))
         await conn.execute(text(idx_type))
         await conn.execute(text(unique_active))
+        await conn.execute(text(alter_max_tokens_default))
     log.info("[schema_migrations] model_configs table ensured (migration_023)")
 
 

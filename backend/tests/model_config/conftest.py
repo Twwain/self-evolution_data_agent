@@ -8,6 +8,14 @@ from app.models.model_config import ModelConfig
 
 @pytest_asyncio.fixture
 async def seed_active_chat_model_config(db):
+    # 幂等: 先 deactivate 同类型既有 active 行, 防 abort 泄漏致 UniqueViolationError
+    from sqlalchemy import update
+
+    await db.execute(
+        update(ModelConfig)
+        .where(ModelConfig.model_type == "CHAT", ModelConfig.is_active == True)  # noqa: E712
+        .values(is_active=False, is_deleted=True)
+    )
     row = ModelConfig(
         provider="openai", protocol="openai",
         base_url="https://example.invalid/v1", api_key="test-key",
@@ -25,6 +33,14 @@ async def seed_active_chat_model_config(db):
 
 @pytest_asyncio.fixture
 async def seed_active_embedding_model_config(db):
+    # 幂等: 先 deactivate 同类型既有 active 行
+    from sqlalchemy import update
+
+    await db.execute(
+        update(ModelConfig)
+        .where(ModelConfig.model_type == "EMBEDDING", ModelConfig.is_active == True)  # noqa: E712
+        .values(is_active=False, is_deleted=True)
+    )
     row = ModelConfig(
         provider="openai", protocol="openai",
         base_url="https://example.invalid/v1", api_key="test-key",
