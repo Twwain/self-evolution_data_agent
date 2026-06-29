@@ -19,7 +19,7 @@ import time
 from langfuse import observe
 
 from app.engine.json_parser import parse_llm_json
-from app.engine.llm import THINKING_DISABLED, ToolUseResponse, chat_completion_with_tools
+from app.engine.llm import ToolUseResponse, _build_assistant_message, chat_completion_with_tools
 from app.knowledge.extraction_tools import (
     EXTRACTION_TOOL_SPECS,
     find_files,
@@ -298,7 +298,6 @@ async def explore_repo(
             response: ToolUseResponse = await chat_completion_with_tools(
                 messages=messages,
                 tools=EXPLORER_TOOL_SPECS,
-                extra_body=THINKING_DISABLED,
             )
         except Exception:
             logger.warning(
@@ -355,14 +354,7 @@ async def explore_repo(
 
         # ── NEUTRAL 格式追加消息 (对齐 extraction_agent.py lines 292-306) ──
         processed_tcs = [tc for tc, _ in tool_results]
-        messages.append({
-            "role": "assistant",
-            "content": response.text or "",
-            "tool_calls": [
-                {"id": tc.id, "name": tc.name, "input": tc.input}
-                for tc in processed_tcs
-            ],
-        })
+        messages.append(_build_assistant_message(response, tool_calls=processed_tcs))
         for tc, result in tool_results:
             messages.append({
                 "role": "tool",
