@@ -296,7 +296,7 @@ async def _run_enum_safety_net(local_path: str, ns_id: int, name: str) -> None:
         iteration += 1
         try:
             response = await chat_completion_with_tools(
-                messages=messages, tools=tool_specs,
+                messages=messages, tools=tool_specs, thinking=False,
             )
         except Exception:
             log.exception("[%s] enum agent LLM 调用失败 (iteration=%d)", name, iteration)

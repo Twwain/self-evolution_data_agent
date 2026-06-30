@@ -86,7 +86,7 @@ async def _call_llm(prompt: str) -> str:
         chat_completion,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
-        max_tokens=200,
+        max_tokens=200, thinking=False,
     )
 
 

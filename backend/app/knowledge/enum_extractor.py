@@ -140,7 +140,7 @@ async def parse_enum_classes_batch(
             ]
             try:
                 raw = await asyncio.to_thread(
-                    chat_completion, messages=messages, temperature=0.1, max_tokens=4096,
+                    chat_completion, messages=messages, temperature=0.1, max_tokens=4096, thinking=False,
                 )
             except Exception as e:
                 async with lock:

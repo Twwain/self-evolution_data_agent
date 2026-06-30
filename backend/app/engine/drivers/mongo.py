@@ -1,11 +1,12 @@
 """MongoDB 异步驱动 — motor AsyncIOMotorClient + aggregation 执行."""
 from __future__ import annotations
 
+import json as _json
 import logging
 import time
 from typing import Any
 
-from bson import DBRef, ObjectId
+from bson import DBRef, ObjectId, json_util
 from bson.decimal128 import Decimal128
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -94,6 +95,30 @@ def _normalize_bson(value: object, _depth: int = 0) -> object:
     if isinstance(value, list):
         return [_normalize_bson(v, _depth + 1) for v in value]
     return value
+
+
+def _decode_extended_json(payload: dict) -> dict:
+    """把 LLM 输出的 Extended JSON ($date/$oid/$numberLong/...) 解码成 BSON 原生类型.
+
+    根因 (trace 6de74455): LLM 在 pipeline/filter 里用 {"$date":"2026-...Z"} 表达
+    日期, parse_llm_json 走纯 json.loads 不认这层包装, 原样作为 Python dict 透传到
+    motor. pymongo 只在 bson.json_util.loads 时才把 {"$date":...} 转成 datetime,
+    对已解析的 dict 会按 BSON 编码规则编码成子文档 (Object, type 3) 而非 Date (type 9).
+    $match 跨类型比较 (BSON 类型序 Object < Date) 使 $gte/$lt 恒假 → 0 行.
+
+    仅在 mongo 驱动边界解码, 不上提全局 parser: 否则 datetime 渗入 knowledge /
+    trace_json 等结构, 下游 json.dumps 会炸 (datetime 不可序列化). 见 design ADR-1.
+
+    json_util 只转换类型 marker key ($date/$oid/...), 不碰管道操作符 key
+    ($match/$group/$gte/$sum), 后者原样透传 — 故无需手写 walker 枚举类型. 见 ADR-2.
+
+    失败安全: 解码异常原样返回 payload (不阻断查询, 仅 log.warning).
+    """
+    try:
+        return json_util.loads(_json.dumps(payload))
+    except Exception as exc:  # noqa: BLE001 — 解码失败不阻业务, 回退原 payload
+        log.warning("[mongo_driver] extended-json decode failed, passthrough: %s", exc)
+        return payload
 
 
 def _classify_query_shape(query: dict) -> tuple[str, Any]:
@@ -276,6 +301,8 @@ class MongoDriver:
         query: dict,
     ) -> CostEstimate:
         log.info("[mongo_driver] estimate_cost ds=%d target=%s", ds.id, target)
+        # Extended JSON ($date/...) 解码 — 与 execute_query 同源, 防 explain 吃错配值
+        query = _decode_extended_json(query)
         client = self._get_client(ds)
         db = client[ds.database]
         coll = db[target]
@@ -332,6 +359,9 @@ class MongoDriver:
                 "execute_query 需要 'pipeline' 或 'filter' key",
                 suggestion="payload 必须包含 'pipeline' (聚合) 或 'filter' (查询)",
             )
+
+        # Extended JSON ($date/...) 解码为 BSON 原生类型 — trace 6de74455 根因修复
+        query = _decode_extended_json(query)
 
         client = self._get_client(ds)
         db = client[ds.database]

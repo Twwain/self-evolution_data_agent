@@ -233,6 +233,7 @@ async def run_extraction_agent(
             response = await chat_completion_with_tools(
                 messages=messages,
                 tools=EXTRACTION_TOOL_SPECS,
+                thinking=False,
             )
         except Exception:
             logger.exception("chat_completion_with_tools 调用异常 (iteration=%d)", iteration)

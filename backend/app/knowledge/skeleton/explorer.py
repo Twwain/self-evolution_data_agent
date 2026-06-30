@@ -298,6 +298,7 @@ async def explore_repo(
             response: ToolUseResponse = await chat_completion_with_tools(
                 messages=messages,
                 tools=EXPLORER_TOOL_SPECS,
+                thinking=False,
             )
         except Exception:
             logger.warning(

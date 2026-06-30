@@ -6,6 +6,7 @@ from app.engine.llm import (
     _to_openai_messages,
     ToolCall,
     ToolUseResponse,
+    build_assistant_message,
 )
 
 
@@ -190,3 +191,51 @@ class TestMultiTurnReasoningContentIntegration:
         assert wire_msgs[0]["reasoning_content"] == "thinking about the query plan..."
         assert wire_msgs[1]["role"] == "tool"
         assert wire_msgs[2]["reasoning_content"] == "checking if this query covers the user intent..."
+
+
+class TestBuildAssistantMessage:
+    """直接测试 build_assistant_message — reasoning_content 条件注入 + tool_calls 显式传入."""
+
+    def test_injects_reasoning_content_when_present(self):
+        """有 reasoning_content → msg 包含该字段."""
+        tc = ToolCall(id="t1", name="grep", input={})
+        resp = ToolUseResponse(
+            text="let me search...",
+            tool_calls=[tc],
+            stop_reason="tool_calls",
+            reasoning_content="thinking about the query plan...",
+        )
+        msg = build_assistant_message(resp)
+        assert msg["role"] == "assistant"
+        assert msg["content"] == "let me search..."
+        assert msg["reasoning_content"] == "thinking about the query plan..."
+        assert msg["tool_calls"] == [{"id": "t1", "name": "grep", "input": {}}]
+
+    def test_omits_reasoning_content_when_none(self):
+        """无 reasoning_content → msg 不含该字段."""
+        tc = ToolCall(id="t1", name="lookup", input={})
+        resp = ToolUseResponse(text="found", tool_calls=[tc], stop_reason="tool_calls")
+        msg = build_assistant_message(resp)
+        assert "reasoning_content" not in msg
+
+    def test_omits_reasoning_content_when_empty_string(self):
+        """空字符串 reasoning_content → msg 不含该字段 (与 None 同行为)."""
+        tc = ToolCall(id="t1", name="read", input={})
+        resp = ToolUseResponse(
+            text="ok", tool_calls=[tc], stop_reason="tool_calls",
+            reasoning_content="",
+        )
+        msg = build_assistant_message(resp)
+        assert "reasoning_content" not in msg
+
+    def test_uses_explicit_tool_calls_over_response(self):
+        """显式 tool_calls 参数覆盖 response.tool_calls."""
+        all_tcs = [
+            ToolCall(id="t1", name="a", input={}),
+            ToolCall(id="t2", name="b", input={}),
+        ]
+        resp = ToolUseResponse(text="", tool_calls=all_tcs, stop_reason="tool_calls")
+        filtered = [all_tcs[0]]  # 模拟 processors 筛选
+        msg = build_assistant_message(resp, tool_calls=filtered)
+        assert len(msg["tool_calls"]) == 1
+        assert msg["tool_calls"][0]["name"] == "a"
