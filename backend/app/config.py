@@ -293,6 +293,21 @@ class Settings(BaseSettings):
     fail-fast 让用户感知需调整问题或拆分会话, 而非看到错误摘要.
     """
 
+    # ── LLM 思考模式全局控制 ──
+    llm_thinking_enabled: bool = False
+    """全局思考模式开关 (默认关), env: IS_LLM_THINKING_ENABLED.
+
+    True 时仅对显式传 thinking=True 的调用方生效 (OpenAI: 不注入 disabled;
+    Claude: 传 enabled + budget_tokens). 绝大多数调用方是确定性抽取/判定,
+    默认关可避免 DeepSeek 思考耗尽 token 预算导致空响应.
+    """
+
+    llm_claude_thinking_budget_tokens: int = 4000  # noqa: hardcode
+    """Claude extended thinking 最小 token 预算, env: IS_LLM_CLAUDE_THINKING_BUDGET_TOKENS.
+
+    Anthropic 要求 >=1024, 默认 4000 为推荐最小值.
+    """
+
     # ── SSE Keepalive (Stage 5) ──────────────────────────
     agent_keepalive_interval_secs: int = 30  # noqa: hardcode
     """SSE 心跳发送间隔, 防客户端连接超时"""
@@ -445,6 +460,15 @@ class Settings(BaseSettings):
                 "IS_AGENT_LOOP_ERROR_CLASS_WINDOW_SIZE "
                 f"({self.agent_loop_error_class_window_size}); "
                 "否则窗口容量不足以累积到阈值, Forced_Clarify 永不触发。"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_thinking_budget(self) -> "Settings":
+        if self.llm_claude_thinking_budget_tokens < 1024:
+            raise ValueError(
+                f"IS_LLM_CLAUDE_THINKING_BUDGET_TOKENS ({self.llm_claude_thinking_budget_tokens}) "
+                "必须 >= 1024（Anthropic 最小值）"
             )
         return self
 

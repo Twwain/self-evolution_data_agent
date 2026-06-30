@@ -430,7 +430,8 @@ def generate_plan_sync(
             {"role": "system", "content": _PLANNER_SYSTEM},
             {"role": "user", "content": user_msg},
         ],
-        max_tokens=3000,  # noqa: hardcode
+        max_tokens=8192,  # noqa: hardcode — 开思考后预留 CoT 预算
+        thinking=True,
     )
     if not raw or not raw.strip():
         raise PlanGenerationError("PlanGenerator LLM 返回空响应")

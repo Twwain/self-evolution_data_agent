@@ -38,8 +38,30 @@ class EmptyLLMResponseError(RuntimeError):
     """LLM returned empty/null content — retryable transient error."""
     pass
 
-# DeepSeek 思考模式关闭 (仅 openai 路径透传, anthropic 路径忽略 — Claude 思考默认关)
-THINKING_DISABLED: dict = {"thinking": {"type": "disabled"}}
+# ── thinking 模式控制 ──────────────────────────────────────────────
+# 仅内部使用, 外部调用方通过 thinking 参数控制
+
+def _build_extra_body(thinking: bool, existing: dict | None) -> dict | None:
+    """OpenAI 路径：thinking 参数 → extra_body 注入.
+
+    thinking=False → {"thinking": {"type": "disabled"}} 合并 existing
+    thinking=True  → 移除已有 thinking 键, 返回 existing 原样
+    """
+    result = dict(existing) if existing else {}
+    result.pop("thinking", None)
+    if not thinking:
+        result["thinking"] = {"type": "disabled"}
+    return result or None
+
+
+def _claude_thinking_cfg(thinking: bool) -> dict | None:
+    """Claude 路径：thinking=True → enabled + budget_tokens."""
+    if thinking:
+        return {
+            "type": "enabled",
+            "budget_tokens": settings.llm_claude_thinking_budget_tokens,
+        }
+    return None
 
 # ── Bedrock proxy tool_use_id 合规校验 ──────────────────────────────────────
 # Bedrock proxy 对 tool_use_id 强制 ^[a-zA-Z0-9_-]+$ 校验;
@@ -206,16 +228,12 @@ def chat_completion(
     max_tokens: int | None = None,
     provider: str | None = None,
     extra_body: dict | None = None,
+    thinking: bool | None = None,
 ) -> str:
-    """
-    统一聊天补全接口
-    messages 格式统一用 OpenAI 风格: [{"role": "system|user|assistant", "content": "..."}]
-    内部自动适配不同 provider 的 API 差异
-    本函数被 @observe 包装, 自动落 generation 观测 (无 trace 时变 no-op)
+    """统一聊天补全接口。
 
-    extra_body: OpenAI 兼容端点的厂商扩展参数 (如 DeepSeek 的
-        {"thinking": {"type": "disabled"}} 关闭思考模式). 仅 openai 路径透传,
-        anthropic 路径忽略 (Claude 思考默认关闭, 由 thinking 参数单独控制).
+    thinking 控制思考模式: None=取 settings 默认, True/False=显式开/关。
+    extra_body 仅用于非 thinking 的厂商扩展参数, 其中的 thinking 键会被覆盖。
     """
     from app.engine.model_registry import registry
     cfg = registry.chat_config
@@ -223,10 +241,12 @@ def chat_completion(
         raise RuntimeError(
             "无激活的 Chat 模型配置，请前往「模型管理」页面添加并激活 CHAT 类型配置。"
         )
+    thinking = settings.llm_thinking_enabled if thinking is None else thinking
     provider = provider or cfg["protocol"]
     if provider == "anthropic":
-        return _claude_chat_with_retry(messages, cfg, temperature, max_tokens)
-    return _openai_chat_with_retry(messages, cfg, temperature, max_tokens, extra_body=extra_body)
+        return _claude_chat_with_retry(messages, cfg, temperature, max_tokens, thinking=thinking)
+    return _openai_chat_with_retry(messages, cfg, temperature, max_tokens,
+                                   extra_body=_build_extra_body(thinking, extra_body))
 
 
 # ════════════════════════════════════════════
@@ -316,7 +336,8 @@ def _block_types(content) -> list[str]:
 # ════════════════════════════════════════════
 
 def _claude_chat(messages: list[dict], cfg: dict[str, Any],
-                 temperature: float | None = None, max_tokens: int | None = None) -> str:
+                 temperature: float | None = None, max_tokens: int | None = None,
+                 thinking: bool = False) -> str:
     client = _get_claude_client(cfg)
     model = cfg["model_name"]
     temp = temperature if temperature is not None else cfg.get("temperature", 0.1)
@@ -335,6 +356,7 @@ def _claude_chat(messages: list[dict], cfg: dict[str, Any],
     if not user_messages or user_messages[0]["role"] != "user":
         user_messages.insert(0, {"role": "user", "content": "请根据以上要求回答。"})
     system_param = system_text.strip() or None
+    thinking_cfg = _claude_thinking_cfg(thinking)
 
     # 大 max_tokens 必须走流式, 否则 SDK 预估超 10min 会直接拒绝
     # SDK 公式: expected_time = 3600 × max_tokens / 128000, > 600s 即 raise
@@ -350,6 +372,7 @@ def _claude_chat(messages: list[dict], cfg: dict[str, Any],
             messages=user_messages,  # type: ignore[arg-type]
             temperature=temp,
             max_tokens=mt,
+            thinking=thinking_cfg,  # type: ignore[arg-type]
         ) as stream:
             for text in stream.text_stream:
                 text_parts.append(text)
@@ -394,6 +417,7 @@ def _claude_chat(messages: list[dict], cfg: dict[str, Any],
         messages=user_messages,  # type: ignore[arg-type]
         temperature=temp,
         max_tokens=mt,
+        thinking=thinking_cfg,  # type: ignore[arg-type]
     )
     text = _extract_claude_text(resp.content)
 
@@ -410,6 +434,7 @@ def _claude_chat(messages: list[dict], cfg: dict[str, Any],
             messages=user_messages,  # type: ignore[arg-type]
             temperature=temp,
             max_tokens=mt,
+            thinking=thinking_cfg,  # type: ignore[arg-type]
         )
         text = _extract_claude_text(resp.content)
         if not text:
@@ -441,12 +466,13 @@ def _claude_chat(messages: list[dict], cfg: dict[str, Any],
 def _claude_chat_with_retry(
     messages: list[dict], cfg: dict[str, Any],
     temperature: float | None = None, max_tokens: int | None = None,
+    thinking: bool = False,
 ) -> str:
     """Claude chat with transient-error retry (指数退避, 最多 settings.llm_retry_max 次重试)."""
     last_exc: BaseException | None = None
     for attempt in range(settings.llm_retry_max + 1):
         try:
-            return _claude_chat(messages, cfg, temperature, max_tokens)
+            return _claude_chat(messages, cfg, temperature, max_tokens, thinking=thinking)
         except Exception as e:
             if not _is_transient_llm_error(e) or attempt == settings.llm_retry_max:
                 raise
@@ -485,12 +511,9 @@ def chat_completion_checked(
     max_tokens: int | None = None,
     provider: str | None = None,
     extra_body: dict | None = None,
+    thinking: bool | None = None,
 ) -> LLMResponse:
-    """同 chat_completion, 但额外返回截断状态 (finish_reason == length/max_tokens).
-
-    extra_body: 仅 openai 路径透传 (如 DeepSeek 的 {"thinking": {"type": "disabled"}}),
-        anthropic 路径忽略 (Claude 思考默认关闭).
-    """
+    """同 chat_completion, 额外返回截断状态。thinking 同上。"""
     from app.engine.model_registry import registry
 
     cfg = registry.chat_config
@@ -498,11 +521,13 @@ def chat_completion_checked(
         raise RuntimeError(
             "无激活的 Chat 模型配置，请前往「模型管理」页面添加并激活 CHAT 类型配置。"
         )
+    thinking = settings.llm_thinking_enabled if thinking is None else thinking
     provider = provider or cfg["protocol"]
 
     if provider == "anthropic":
-        return _claude_chat_checked(messages, cfg, temperature, max_tokens)
-    return _openai_chat_checked(messages, cfg, temperature, max_tokens, extra_body=extra_body)
+        return _claude_chat_checked(messages, cfg, temperature, max_tokens, thinking=thinking)
+    return _openai_chat_checked(messages, cfg, temperature, max_tokens,
+                                extra_body=_build_extra_body(thinking, extra_body))
 
 
 def _openai_chat_checked(
@@ -535,6 +560,7 @@ def _openai_chat_checked(
 def _claude_chat_checked(
     messages: list[dict], cfg: dict[str, Any],
     temperature: float | None = None, max_tokens: int | None = None,
+    thinking: bool = False,
 ) -> LLMResponse:
     client = _get_claude_client(cfg)
     model = cfg["model_name"]
@@ -552,6 +578,7 @@ def _claude_chat_checked(
     if not user_messages or user_messages[0]["role"] != "user":
         user_messages.insert(0, {"role": "user", "content": "请根据以上要求回答。"})
     system_param = system_text.strip() or None
+    thinking_cfg = _claude_thinking_cfg(thinking)
 
     # ── 首次: 不干预 thinking ──
     resp = client.messages.create(
@@ -560,6 +587,7 @@ def _claude_chat_checked(
         messages=user_messages,  # type: ignore[arg-type]
         temperature=temp,
         max_tokens=mt,
+        thinking=thinking_cfg,  # type: ignore[arg-type]
     )
     text = _extract_claude_text(resp.content)
 
@@ -576,6 +604,7 @@ def _claude_chat_checked(
             messages=user_messages,  # type: ignore[arg-type]
             temperature=temp,
             max_tokens=mt,
+            thinking=thinking_cfg,  # type: ignore[arg-type]
         )
         text = _extract_claude_text(resp.content)
         if not text:
@@ -625,6 +654,7 @@ class ToolUseResponse:
     tool_calls: list[ToolCall]
     stop_reason: str                # "tool_use" | "end_turn" | "max_tokens" | "stop" | "tool_calls"
     usage: dict = field(default_factory=dict)
+    reasoning_content: str | None = None  # DeepSeek 思考模式下多轮回传需要
 
 
 @observe(
@@ -641,19 +671,11 @@ async def chat_completion_with_tools(
     temperature: float | None = None,
     max_tokens: int | None = None,
     extra_body: dict | None = None,
+    thinking: bool | None = None,
 ) -> ToolUseResponse:
-    """统一 tool_use 入口.
+    """统一 tool_use 入口。thinking 控制思考模式: None=取 settings 默认, True/False=显式开/关。
 
-    中性 tool spec 格式 (与 OpenAI / Anthropic 都兼容):
-        {"name": str, "description": str, "input_schema": {json schema}}
-
-    内部按 provider 分流:
-        - anthropic → Anthropic tool_use block (Claude)
-        - openai → OpenAI Chat Completions function calling (DashScope / DeepSeek / vLLM / …)
-    stream_callback 在 Stage 5 SSE 接入, 当前轮次完整返回, 不分块推送.
-
-    extra_body: 仅 openai 路径透传 (如 DeepSeek 的 {"thinking": {"type": "disabled"}}),
-        anthropic 路径忽略 (Claude 思考默认关闭).
+    extra_body 仅用于非 thinking 的厂商扩展参数, 其中的 thinking 键会被覆盖。
     """
     from app.engine.model_registry import registry
     cfg = registry.chat_config
@@ -661,15 +683,16 @@ async def chat_completion_with_tools(
         raise RuntimeError(
             "无激活的 Chat 模型配置，请前往「模型管理」页面添加并激活 CHAT 类型配置。"
         )
+    thinking = settings.llm_thinking_enabled if thinking is None else thinking
     provider = provider or cfg["protocol"]
     if provider == "anthropic":
         resp = await asyncio.to_thread(
-            _claude_tool_use, messages, tools, cfg, temperature, max_tokens,
+            _claude_tool_use, messages, tools, cfg, temperature, max_tokens, thinking=thinking,
         )
     else:
         resp = await asyncio.to_thread(
             _openai_tool_use, messages, tools, cfg, temperature, max_tokens,
-            extra_body=extra_body,
+            extra_body=_build_extra_body(thinking, extra_body),
         )
     _coerce_tool_call_args(resp.tool_calls, tools)
     return resp
@@ -677,20 +700,43 @@ async def chat_completion_with_tools(
 
 # ── OpenAI-compatible (Chat Completions function calling) ──
 
+def build_assistant_message(response: ToolUseResponse, *,
+                             tool_calls: list[ToolCall] | None = None) -> dict:
+    """构造中性 assistant 消息，含 reasoning_content（如有）。
+
+    收敛 agent_loop / extraction_agent / explorer / trainer 四处重复的
+    dict 构造 + reasoning_content 条件注入逻辑，保证多轮回传字段一致性。
+
+    tool_calls 默认取 response.tool_calls；extraction_agent 等需要按实际
+    执行结果筛选时可显式传入 processed_tcs。
+    """
+    tcs = tool_calls if tool_calls is not None else response.tool_calls
+    msg: dict = {
+        "role": "assistant",
+        "content": response.text or "",
+        "tool_calls": [
+            {"id": tc.id, "name": tc.name, "input": tc.input}
+            for tc in tcs
+        ],
+    }
+    if response.reasoning_content:
+        msg["reasoning_content"] = response.reasoning_content
+    return msg
+
+
 def _to_openai_messages(messages: list[dict]) -> list[dict]:
     """把中性消息格式适配为 OpenAI Chat Completions 线格式.
 
     中性 assistant 消息 (agent_loop 产出):
-        {"role": "assistant", "content": str, "tool_calls": [{"id", "name", "input"}]}
-    OpenAI 线格式要求每个 tool_call 为:
-        {"id", "type": "function", "function": {"name", "arguments": "<json str>"}}
+        {"role": "assistant", "content": str, "tool_calls": [...], "reasoning_content": str|None}
+    OpenAI 线格式: reasoning_content 需随 assistant 消息回传 (DeepSeek 思考模式要求).
 
     system / user / tool 消息本就符合 OpenAI, 原样透传.
     """
     converted: list[dict] = []
     for m in messages:
         if m.get("role") == "assistant" and m.get("tool_calls"):
-            converted.append({
+            msg: dict = {
                 "role": "assistant",
                 "content": m.get("content") or "",
                 "tool_calls": [
@@ -704,7 +750,11 @@ def _to_openai_messages(messages: list[dict]) -> list[dict]:
                     }
                     for tc in m["tool_calls"]
                 ],
-            })
+            }
+            rc = m.get("reasoning_content")
+            if rc:
+                msg["reasoning_content"] = rc
+            converted.append(msg)
         else:
             converted.append(m)
     return converted
@@ -742,6 +792,7 @@ def _openai_tool_use(
     choice = resp.choices[0]
     msg = choice.message
     text = msg.content or ""
+    reasoning_content = getattr(msg, "reasoning_content", None) or None
     raw_calls = getattr(msg, "tool_calls", None) or []
     tool_calls = [
         ToolCall(
@@ -769,6 +820,7 @@ def _openai_tool_use(
         tool_calls=tool_calls,
         stop_reason=choice.finish_reason or "stop",
         usage=usage_dict,
+        reasoning_content=reasoning_content,
     )
 
 
@@ -778,6 +830,7 @@ def _claude_tool_use(
     messages: list[dict], tools: list[dict],
     cfg: dict[str, Any],
     temperature: float | None = None, max_tokens: int | None = None,
+    thinking: bool = False,
 ) -> ToolUseResponse:
     client = _get_claude_client(cfg)
     model = cfg["model_name"]
@@ -854,6 +907,7 @@ def _claude_tool_use(
          "input_schema": t["input_schema"]}
         for t in tools
     ]
+    thinking_cfg = _claude_thinking_cfg(thinking)
 
     resp = client.messages.create(
         model=model,
@@ -862,6 +916,7 @@ def _claude_tool_use(
         tools=claude_tools,  # type: ignore[arg-type]
         temperature=temp,
         max_tokens=mt,
+        thinking=thinking_cfg,  # type: ignore[arg-type]
     )
 
     text_parts: list[str] = []

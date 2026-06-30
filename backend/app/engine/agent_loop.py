@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from langfuse import observe
 
 from app.config import settings
-from app.engine.llm import ToolCall, ToolUseResponse, chat_completion_with_tools
+from app.engine.llm import ToolCall, ToolUseResponse, build_assistant_message, chat_completion_with_tools
 from app.logging_config import trace_id_var
 
 if TYPE_CHECKING:
@@ -365,14 +365,7 @@ async def run_agent_loop(
                 })
 
             # ── 添加 assistant 消息（包含 tool_use）──
-            messages.append({
-                "role": "assistant",
-                "content": response.text or "",
-                "tool_calls": [
-                    {"id": tc.id, "name": tc.name, "input": tc.input}
-                    for tc in response.tool_calls
-                ],
-            })
+            messages.append(build_assistant_message(response))
 
             # ── 并发执行 ──
             tool_names = [tc.name for tc in response.tool_calls]

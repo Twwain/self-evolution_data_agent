@@ -234,7 +234,7 @@ async def _run_enum_safety_net(local_path: str, ns_id: int, name: str) -> None:
     log.info("[%s] enum agent 开始...", name)
     import json as _json
 
-    from app.engine.llm import THINKING_DISABLED, chat_completion_with_tools
+    from app.engine.llm import build_assistant_message, chat_completion_with_tools
     from app.knowledge.enum_dictionary_writer import upsert_enum_dictionary_from_code
     from app.knowledge.enum_extractor import EnumDef, EnumValue
     from app.knowledge.extraction_tools import (
@@ -296,7 +296,7 @@ async def _run_enum_safety_net(local_path: str, ns_id: int, name: str) -> None:
         iteration += 1
         try:
             response = await chat_completion_with_tools(
-                messages=messages, tools=tool_specs, extra_body=THINKING_DISABLED,
+                messages=messages, tools=tool_specs,
             )
         except Exception:
             log.exception("[%s] enum agent LLM 调用失败 (iteration=%d)", name, iteration)
@@ -341,14 +341,7 @@ async def _run_enum_safety_net(local_path: str, ns_id: int, name: str) -> None:
         )
 
         processed_tcs = [tc for tc, _ in tool_results]
-        messages.append({
-            "role": "assistant",
-            "content": response.text or "",
-            "tool_calls": [
-                {"id": tc.id, "name": tc.name, "input": tc.input}
-                for tc in processed_tcs
-            ],
-        })
+        messages.append(build_assistant_message(response, tool_calls=processed_tcs))
 
         def _serialize(r: dict) -> str:
             raw = _json.dumps(r, ensure_ascii=False, default=str)
