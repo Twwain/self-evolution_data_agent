@@ -123,6 +123,14 @@ def _project_field_for_llm(field: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+_INTERNAL_RELATIONSHIP_KEYS = frozenset({"sources"})
+
+
+def _project_relationship_for_llm(rel: dict) -> dict:
+    """剥 sources — 内部元数据不泄 LLM."""
+    return {k: v for k, v in rel.items() if k not in _INTERNAL_RELATIONSHIP_KEYS}
+
+
 # 向后兼容别名 (测试文件引用)
 _filter_enum_fields_for_llm = _project_field_for_llm
 
@@ -162,7 +170,10 @@ async def fetch_schema(
             "description": canonical.description,
             "fields": fields,
             "indexes": indexes,
-            "relationships": _json.loads(canonical.relationships_json or "[]"),
+            "relationships": [
+                _project_relationship_for_llm(r)
+                for r in _json.loads(canonical.relationships_json or "[]")
+            ],
             "sample_count": canonical.sample_count,
             "source": "canonical",
         }

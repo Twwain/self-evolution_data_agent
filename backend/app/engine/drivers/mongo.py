@@ -492,6 +492,14 @@ class MongoDriver:
         self._caps_cache[ds.id] = caps  # 仅缓存成功结果 (R3.2)
         return caps
 
+    # ── fetch_foreign_keys ─────────────────────────────────
+
+    async def fetch_foreign_keys(
+        self, ds: DataSource, target: str | None = None,
+    ) -> list[dict]:
+        """MongoDB 无外键概念,返 []. 零连库."""
+        return []
+
     # ── fetch_db_profile ─────────────────────────────────
 
     async def fetch_db_profile(self, ds: DataSource) -> dict:

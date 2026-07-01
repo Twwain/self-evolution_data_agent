@@ -261,13 +261,32 @@ def _openai_chat(messages: list[dict], cfg: dict[str, Any],
     model = cfg["model_name"]
     temp = temperature if temperature is not None else cfg.get("temperature", 0.1)
     mt = max_tokens if max_tokens is not None else cfg.get("max_tokens", 12288)
-    resp = client.chat.completions.create(
-        model=model,
-        messages=messages,  # type: ignore[arg-type]
-        temperature=temp,
-        max_tokens=mt,
-        extra_body=extra_body,
-    )
+
+    # ── L3 extra_body 退化: 代理不支持时移除重试 (如 thinking:disabled 被拒) ──
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,  # type: ignore[arg-type]
+            temperature=temp,
+            max_tokens=mt,
+            extra_body=extra_body,
+        )
+    except openai.BadRequestError as e:
+        if extra_body is not None:
+            logger.warning(
+                "OpenAI extra_body 被代理拒绝 (status=%s), 移除后重试: %s",
+                getattr(e, 'status_code', '?'), e,
+            )
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,  # type: ignore[arg-type]
+                temperature=temp,
+                max_tokens=mt,
+                extra_body=None,
+            )
+        else:
+            raise
+
     text = resp.choices[0].message.content or ""
     usage = getattr(resp, "usage", None)
     if not text.strip():
@@ -358,109 +377,121 @@ def _claude_chat(messages: list[dict], cfg: dict[str, Any],
     system_param = system_text.strip() or None
     thinking_cfg = _claude_thinking_cfg(thinking)
 
-    # 大 max_tokens 必须走流式, 否则 SDK 预估超 10min 会直接拒绝
-    # SDK 公式: expected_time = 3600 × max_tokens / 128000, > 600s 即 raise
-    # 解出真实临界 21333, 留 buffer 取 21000
-    if mt > 21000:
-        text_parts: list[str] = []
-        input_tokens: int | None = None
-        output_tokens: int | None = None
-        final = None
-        with client.messages.stream(
-            model=model,
-            system=system_param,  # type: ignore[arg-type]
-            messages=user_messages,  # type: ignore[arg-type]
-            temperature=temp,
-            max_tokens=mt,
-            thinking=thinking_cfg,  # type: ignore[arg-type]
-        ) as stream:
-            for text in stream.text_stream:
-                text_parts.append(text)
-            final = stream.get_final_message()
-            if final and final.usage:
-                input_tokens = final.usage.input_tokens
-                output_tokens = final.usage.output_tokens
-        result = "".join(text_parts)
-        if not result:
-            blocks = _block_types(final.content) if final else []
-            stop = final.stop_reason if final else None
-            thinking_preview = ""
-            for b in (final.content if final else []) or []:
-                if getattr(b, "type", None) == "thinking":
-                    t = getattr(b, "thinking", "") or ""
-                    thinking_preview = t[:500]
-                    break
-            diag = (
-                f"<EMPTY_TEXT> blocks={blocks} stop_reason={stop} "
-                f"in_tok={input_tokens} out_tok={output_tokens} "
-                f"thinking_preview={thinking_preview!r}"
-            )
-            logger.warning("Claude 流式返回空文本: %s", diag)
+    # ── 调用内核 (含 empty-text retry + Langfuse recording) ──
+    def _call(tcfg: dict | None) -> str:
+        # 大 max_tokens 必须走流式, 否则 SDK 预估超 10min 会直接拒绝
+        # SDK 公式: expected_time = 3600 × max_tokens / 128000, > 600s 即 raise
+        # 解出真实临界 21333, 留 buffer 取 21000
+        if mt > 21000:
+            text_parts: list[str] = []
+            input_tokens: int | None = None
+            output_tokens: int | None = None
+            final = None
+            with client.messages.stream(
+                model=model,
+                system=system_param,  # type: ignore[arg-type]
+                messages=user_messages,  # type: ignore[arg-type]
+                temperature=temp,
+                max_tokens=mt,
+                thinking=tcfg,  # type: ignore[arg-type]
+            ) as stream:
+                for text in stream.text_stream:
+                    text_parts.append(text)
+                final = stream.get_final_message()
+                if final and final.usage:
+                    input_tokens = final.usage.input_tokens
+                    output_tokens = final.usage.output_tokens
+            result = "".join(text_parts)
+            if not result:
+                blocks = _block_types(final.content) if final else []
+                stop = final.stop_reason if final else None
+                thinking_preview = ""
+                for b in (final.content if final else []) or []:
+                    if getattr(b, "type", None) == "thinking":
+                        t = getattr(b, "thinking", "") or ""
+                        thinking_preview = t[:500]
+                        break
+                diag = (
+                    f"<EMPTY_TEXT> blocks={blocks} stop_reason={stop} "
+                    f"in_tok={input_tokens} out_tok={output_tokens} "
+                    f"thinking_preview={thinking_preview!r}"
+                )
+                logger.warning("Claude 流式返回空文本: %s", diag)
+                _record_generation(
+                    model=model, messages=messages, output=diag,
+                    input_tokens=input_tokens, output_tokens=output_tokens,
+                )
+                raise EmptyLLMResponseError(
+                    f"Claude 流式返回空文本 blocks={blocks} stop_reason={stop} "
+                    f"out_tok={output_tokens}"
+                )
             _record_generation(
-                model=model, messages=messages, output=diag,
+                model=model, messages=messages, output=result,
                 input_tokens=input_tokens, output_tokens=output_tokens,
             )
-            raise EmptyLLMResponseError(
-                f"Claude 流式返回空文本 blocks={blocks} stop_reason={stop} "
-                f"out_tok={output_tokens}"
-            )
-        _record_generation(
-            model=model, messages=messages, output=result,
-            input_tokens=input_tokens, output_tokens=output_tokens,
-        )
-        return result
+            return result
 
-    # ── 首次: 不干预 thinking, 接受任意 block 组合 ──
-    resp = client.messages.create(
-        model=model,
-        system=system_param,  # type: ignore[arg-type]
-        messages=user_messages,  # type: ignore[arg-type]
-        temperature=temp,
-        max_tokens=mt,
-        thinking=thinking_cfg,  # type: ignore[arg-type]
-    )
-    text = _extract_claude_text(resp.content)
-
-    # ── 空文本 → 假设服务端偶发抖动, 原参数重试一次 ──
-    if not text:
-        blocks1 = _block_types(resp.content)
-        stop1 = resp.stop_reason
-        logger.warning(
-            "Claude 首次空文本 blocks=%s stop=%s — 原参数重试", blocks1, stop1,
-        )
+        # ── 非流式: 空文本重试一次 ──
         resp = client.messages.create(
             model=model,
             system=system_param,  # type: ignore[arg-type]
             messages=user_messages,  # type: ignore[arg-type]
             temperature=temp,
             max_tokens=mt,
-            thinking=thinking_cfg,  # type: ignore[arg-type]
+            thinking=tcfg,  # type: ignore[arg-type]
         )
         text = _extract_claude_text(resp.content)
         if not text:
-            blocks2 = _block_types(resp.content)
-            stop2 = resp.stop_reason
-            diag = (
-                f"<EMPTY_TEXT> first=(blocks={blocks1},stop={stop1}) "
-                f"retry=(blocks={blocks2},stop={stop2})"
+            blocks1 = _block_types(resp.content)
+            stop1 = resp.stop_reason
+            logger.warning(
+                "Claude 首次空文本 blocks=%s stop=%s — 原参数重试", blocks1, stop1,
             )
-            _record_generation(
-                model=model, messages=messages, output=diag,
-                input_tokens=resp.usage.input_tokens if resp.usage else None,
-                output_tokens=resp.usage.output_tokens if resp.usage else None,
+            resp = client.messages.create(
+                model=model,
+                system=system_param,  # type: ignore[arg-type]
+                messages=user_messages,  # type: ignore[arg-type]
+                temperature=temp,
+                max_tokens=mt,
+                thinking=tcfg,  # type: ignore[arg-type]
             )
-            raise EmptyLLMResponseError(
-                f"Claude 两次调用均无 TextBlock "
-                f"first=(blocks={blocks1},stop={stop1}) "
-                f"retry=(blocks={blocks2},stop={stop2})"
-            )
+            text = _extract_claude_text(resp.content)
+            if not text:
+                blocks2 = _block_types(resp.content)
+                stop2 = resp.stop_reason
+                diag = (
+                    f"<EMPTY_TEXT> first=(blocks={blocks1},stop={stop1}) "
+                    f"retry=(blocks={blocks2},stop={stop2})"
+                )
+                _record_generation(
+                    model=model, messages=messages, output=diag,
+                    input_tokens=resp.usage.input_tokens if resp.usage else None,
+                    output_tokens=resp.usage.output_tokens if resp.usage else None,
+                )
+                raise EmptyLLMResponseError(
+                    f"Claude 两次调用均无 TextBlock "
+                    f"first=(blocks={blocks1},stop={stop1}) "
+                    f"retry=(blocks={blocks2},stop={stop2})"
+                )
 
-    _record_generation(
-        model=model, messages=messages, output=text,
-        input_tokens=resp.usage.input_tokens if resp.usage else None,
-        output_tokens=resp.usage.output_tokens if resp.usage else None,
-    )
-    return text
+        _record_generation(
+            model=model, messages=messages, output=text,
+            input_tokens=resp.usage.input_tokens if resp.usage else None,
+            output_tokens=resp.usage.output_tokens if resp.usage else None,
+        )
+        return text
+
+    # ── L3 thinking 退化: 代理/模型不支持时自动关闭重试 ──
+    try:
+        return _call(thinking_cfg)
+    except anthropic.BadRequestError as e:
+        if thinking_cfg is not None:
+            logger.warning(
+                "Claude thinking 被代理拒绝 (status=%s), 关闭后重试: %s",
+                getattr(e, 'status_code', '?'), e,
+            )
+            return _call(None)
+        raise
 
 
 def _claude_chat_with_retry(

@@ -406,6 +406,47 @@ class MySQLDriver:
         for ds_id in list(self._pools.keys()):
             await self.invalidate_pool(ds_id)
 
+    # ── fetch_foreign_keys ─────────────────────────────────
+
+    async def fetch_foreign_keys(
+        self, ds: DataSource, target: str | None = None,
+    ) -> list[dict]:
+        """查 INFORMATION_SCHEMA 外键 → 列表(try/except 降级,与 Oracle 对称)."""
+        try:
+            pool = await self._get_pool(ds)
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    if target is not None:
+                        await cur.execute(
+                            "SELECT TABLE_NAME, COLUMN_NAME, "
+                            "REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, "
+                            "REFERENCED_COLUMN_NAME "
+                            "FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE "
+                            "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s "
+                            "AND REFERENCED_TABLE_NAME IS NOT NULL "
+                            "ORDER BY TABLE_NAME, COLUMN_NAME",
+                            (ds.database, target),
+                        )
+                    else:
+                        await cur.execute(
+                            "SELECT TABLE_NAME, COLUMN_NAME, "
+                            "REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, "
+                            "REFERENCED_COLUMN_NAME "
+                            "FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE "
+                            "WHERE TABLE_SCHEMA = %s "
+                            "AND REFERENCED_TABLE_NAME IS NOT NULL "
+                            "ORDER BY TABLE_NAME, COLUMN_NAME",
+                            (ds.database,),
+                        )
+                    rows = await cur.fetchall()
+            return _fk_rows_to_relationships(rows, "mysql")
+        except Exception:
+            log.warning(
+                "[mysql_driver] fetch_foreign_keys failed ds=%d target=%s",
+                ds.id, target, exc_info=True,
+            )
+            return []
+
     # ── private helpers ──────────────────────────────────
 
     @staticmethod
@@ -467,3 +508,21 @@ class MySQLDriver:
         else:
             # single — 使用全局 row_limit (已有 LIMIT 时不覆盖)
             return sql if has_limit else f"{sql} LIMIT {settings.query_row_limit}"
+
+
+def _fk_rows_to_relationships(
+    rows: list[dict], db_type: str,
+) -> list[dict]:
+    """把 INFORMATION_SCHEMA 行映射为 canonical relationship 7 键."""
+    return [
+        {
+            "from_target": r["TABLE_NAME"],
+            "from_field": r["COLUMN_NAME"],
+            "to_db_type": db_type,
+            "to_database": r["REFERENCED_TABLE_SCHEMA"],
+            "to_target": r["REFERENCED_TABLE_NAME"],
+            "to_field": r["REFERENCED_COLUMN_NAME"],
+            "relation_type": "many_to_one",
+        }
+        for r in rows
+    ]

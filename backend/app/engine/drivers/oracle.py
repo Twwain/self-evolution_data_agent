@@ -135,6 +135,24 @@ def _cursor_to_dicts(cursor: Any, rows: list) -> list[dict]:
     return [dict(zip(col_names, row)) for row in rows]
 
 
+def _oracle_fk_rows_to_relationships(
+    rows: list[dict], db_type: str,
+) -> list[dict]:
+    """Oracle FK rows → canonical relationship 7 键."""
+    return [
+        {
+            "from_target": r["table_name"],
+            "from_field": r["column_name"],
+            "to_db_type": db_type,
+            "to_database": r["referenced_owner"],
+            "to_target": r["referenced_table_name"],
+            "to_field": r["referenced_column_name"],
+            "relation_type": "many_to_one",
+        }
+        for r in rows
+    ]
+
+
 # ── OracleDriver ──────────────────────────────────────────────
 
 class OracleDriver:
@@ -587,6 +605,74 @@ class OracleDriver:
                 except Exception:
                     pass
         return p
+
+    # ── fetch_foreign_keys ─────────────────────────────────
+
+    async def fetch_foreign_keys(
+        self, ds: DataSource, target: str | None = None,
+    ) -> list[dict]:
+        """查 USER_CONSTRAINTS(type='R') → FK 列表. 降级返 []."""
+        try:
+            return await self._run_in_executor(
+                self._fetch_foreign_keys_sync, ds, target,
+            )
+        except Exception:
+            log.warning(
+                "[oracle_driver] fetch_foreign_keys failed ds=%d target=%s",
+                ds.id, target, exc_info=True,
+            )
+            return []
+
+    def _fetch_foreign_keys_sync(
+        self, ds: DataSource, target: str | None,
+    ) -> list[dict]:
+        """同步取 FK. ds.id 不为 None 走连接池, None 走一次性连接."""
+        if ds.id is not None:
+            pool = self._get_sync_pool(ds)
+            with pool.acquire() as conn:
+                return self._fk_queries(conn, ds, target)
+        conn = oracledb.connect(
+            user=ds.username, password=ds.password, dsn=self._dsn(ds),
+            tcp_connect_timeout=settings.oracle_connect_timeout_secs,
+        )
+        try:
+            return self._fk_queries(conn, ds, target)
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _fk_queries(conn, ds: DataSource, target: str | None) -> list[dict]:
+        cur = conn.cursor()
+        if target is not None:
+            cur.execute(
+                "SELECT a.TABLE_NAME, a.COLUMN_NAME, "
+                "c_pk.OWNER AS REFERENCED_OWNER, "
+                "c_pk.TABLE_NAME AS REFERENCED_TABLE_NAME, "
+                "c_pk.COLUMN_NAME AS REFERENCED_COLUMN_NAME "
+                "FROM USER_CONS_COLUMNS a "
+                "JOIN USER_CONSTRAINTS r ON r.CONSTRAINT_NAME = a.CONSTRAINT_NAME "
+                "   AND r.CONSTRAINT_TYPE = 'R' "
+                "JOIN USER_CONS_COLUMNS c_pk ON c_pk.CONSTRAINT_NAME = r.R_CONSTRAINT_NAME "
+                "   AND c_pk.POSITION = a.POSITION "
+                "WHERE a.TABLE_NAME = :target "
+                "ORDER BY a.TABLE_NAME, a.COLUMN_NAME",
+                target=target,
+            )
+        else:
+            cur.execute(
+                "SELECT a.TABLE_NAME, a.COLUMN_NAME, "
+                "c_pk.OWNER AS REFERENCED_OWNER, "
+                "c_pk.TABLE_NAME AS REFERENCED_TABLE_NAME, "
+                "c_pk.COLUMN_NAME AS REFERENCED_COLUMN_NAME "
+                "FROM USER_CONS_COLUMNS a "
+                "JOIN USER_CONSTRAINTS r ON r.CONSTRAINT_NAME = a.CONSTRAINT_NAME "
+                "   AND r.CONSTRAINT_TYPE = 'R' "
+                "JOIN USER_CONS_COLUMNS c_pk ON c_pk.CONSTRAINT_NAME = r.R_CONSTRAINT_NAME "
+                "   AND c_pk.POSITION = a.POSITION "
+                "ORDER BY a.TABLE_NAME, a.COLUMN_NAME"
+            )
+        rows = _cursor_to_dicts(cur, cur.fetchall())
+        return _oracle_fk_rows_to_relationships(rows, "oracle")
 
     # ── lifecycle ─────────────────────────────────────────────
 

@@ -60,7 +60,7 @@ def _serialize_sub_fields(sub_fields: list[dict]) -> list[dict]:
 
 def _map_agent_to_channels(
     agent_objects: list[dict], knowledge_proposals: list[dict],
-    coll_to_db: dict[str, str] | None,
+    coll_to_db: dict[str, tuple[str, str]] | None,
 ) -> tuple[CodeParseResult, list[dict]]:
     """Agent emit 产物 → CodeParseResult 7 通道 + business_examples (sql2nl).
 
@@ -82,7 +82,7 @@ def _map_agent_to_channels(
             continue
         paradigm = obj.get("paradigm", "document")
         base = {
-            "database": coll_to_db.get(name, ""),
+            "database": coll_to_db.get(name, ("", ""))[1],
             "source_ref": obj.get("source_ref") or "",
             "description": obj.get("description") or "",
             "fields": [],
@@ -125,7 +125,7 @@ def _map_agent_to_channels(
             #   db_type          ← writer 经 DataSource 反查
             primary_coll = payload.get("primary_collection", "")
             if not payload.get("primary_database"):
-                payload["primary_database"] = coll_to_db.get(primary_coll, "")
+                payload["primary_database"] = coll_to_db.get(primary_coll, ("", ""))[1]
             business_terms.append(payload)
         elif et == "rule":
             business_rules.append(payload)
@@ -162,17 +162,17 @@ async def _load_profile_hint(repo_id: int) -> str | None:
     return None
 
 
-async def _build_coll_to_db(ns_id: int, name: str) -> dict[str, str]:
+async def _build_coll_to_db(ns_id: int, name: str) -> dict[str, tuple[str, str]]:
     """实时连接 namespace 下各 DataSource, 列其库表/集合 → {对象名: database} 反查表.
 
     用于补全 agent 产物缺失的 database 字段。连接失败的单个 DS 跳过 (best-effort)。
     """
     from app.engine.drivers import DRIVERS, get_driver
 
-    coll_to_db: dict[str, str] = {}
+    coll_to_db: dict[str, tuple[str, str]] = {}
     async with async_session() as ds_db:
         ds_rows = list((await ds_db.execute(
-            select(DataSource).where(DataSource.namespace_id == ns_id)
+            select(DataSource).where(DataSource.namespace_id == ns_id).order_by(DataSource.id)
         )).scalars().all())
         for ds in ds_rows:
             if ds.db_type not in DRIVERS:
@@ -183,7 +183,7 @@ async def _build_coll_to_db(ns_id: int, name: str) -> dict[str, str]:
                 driver = get_driver(ds.db_type)
                 names = await driver.list_object_names(ds)
                 for n in names:
-                    coll_to_db.setdefault(n, ds.database)
+                    coll_to_db.setdefault(n, (ds.db_type, ds.database))
             except Exception as e:
                 log.warning("[%s] collection→db 反查连接失败 ds_id=%d db_type=%s: %s",
                             name, ds.id, ds.db_type, e)
@@ -459,7 +459,7 @@ def _build_docs(code_result):
 def _collect_referenced_sql_tables(
     mybatis_entries: list[dict],
     jpa_entities: list[dict],
-    coll_to_db: dict[str, str],
+    coll_to_db: dict[str, tuple[str, str]],
 ) -> set[str]:
     """聚合本 repo 引用的 SQL 型表名，收窄 refresh_driver_canonicals 范围.
 
@@ -701,9 +701,13 @@ async def run_training_pipeline_with_progress(
         await promo_db.commit()
 
     # ── 6.6 补充索引信息 (indexes_json + field indexed) ──
-    from app.knowledge.schema_canonical import backfill_indexes_from_driver
+    from app.knowledge.schema_canonical import (
+        backfill_indexes_from_driver,
+        cleanup_stale_fk_relationships,
+    )
     async with async_session() as idx_db:
         await backfill_indexes_from_driver(idx_db, ns_id)
+        await cleanup_stale_fk_relationships(idx_db, ns_id)
         await idx_db.commit()
 
     # ── 7. 业务术语刷新已从训练管道移除 ──

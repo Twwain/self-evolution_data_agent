@@ -149,3 +149,10 @@ class DataSourceDriver(Protocol):
         返回 dict 缺某键 = 该项抽取失败, 不影响其他键. profiled_at 始终有.
         """
         ...
+
+    async def fetch_foreign_keys(
+        self, ds: DataSource, target: str | None = None,
+    ) -> list[dict]:
+        """返回外键关系列表. 每项含 from_target/from_field/to_db_type/to_database/
+        to_target/to_field/relation_type. 不支持外键的 driver 显式 return []."""
+        return []
